@@ -47,7 +47,7 @@ class Renderer: MTKViewDelegate {
 
     let size = metalKitView.drawableSize
     let aspect = Float(size.width / max(size.height, 1))
-    let eye = SIMD3<Float>(0, 0, 3)
+    let eye = SIMD3<Float>(1.5, 1.5, 1.5)
     let lookAt = SIMD3<Float>(0, 0, 0)
     let worldUp = SIMD3<Float>(0, 1, 0)
     let forward = simd_normalize(lookAt - eye)
@@ -64,7 +64,7 @@ class Renderer: MTKViewDelegate {
     hash = 100
     description = "Renderer"
     
-    scene = BasicScene(mesh: MeshFactory.makeBasicSphere(allocator: MTKMeshBufferAllocator(device: device), device: device))
+    scene = BasicScene(mesh: MeshFactory.makeBasicPlane(allocator: MTKMeshBufferAllocator(device: device), device: device))
 
     pipeline = RenderingPipeline(device: self.device, view: metalKitView, scene: scene)
   }
