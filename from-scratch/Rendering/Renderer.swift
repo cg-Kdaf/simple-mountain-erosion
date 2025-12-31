@@ -9,6 +9,15 @@ import MetalKit
 import MetalPerformanceShaders
 
 class Renderer: MTKViewDelegate {
+  struct Camera {
+    var position: SIMD3<Float>
+    var forward: SIMD3<Float>
+    var right: SIMD3<Float>
+    var up: SIMD3<Float>
+    var fovYRadians: Float
+    var aspect: Float
+  }
+
   let device: MTLDevice
   let maxFramesInFlight = 1
   var semaphore: DispatchSemaphore!
@@ -17,7 +26,10 @@ class Renderer: MTKViewDelegate {
   var superclass: AnyClass?
   var scene: SceneContainer
   var pipeline: RenderingPipeline
-  
+
+  var camera: Camera
+  var cameraBuffer: MTLBuffer
+
   init?(metalKitView: MTKView) {
     metalKitView.colorPixelFormat = .rgba16Float
     metalKitView.sampleCount = 1
@@ -32,6 +44,22 @@ class Renderer: MTKViewDelegate {
       return nil
     }
     device = device_
+
+    let size = metalKitView.drawableSize
+    let aspect = Float(size.width / max(size.height, 1))
+    let eye = SIMD3<Float>(0, 0, 3)
+    let lookAt = SIMD3<Float>(0, 0, 0)
+    let worldUp = SIMD3<Float>(0, 1, 0)
+    let forward = simd_normalize(lookAt - eye)
+    let right = simd_normalize(simd_cross(forward, worldUp))
+    let up = simd_normalize(simd_cross(right, forward))
+    let fovYRadians: Float = 60.0 * .pi / 180.0
+    let cam = Camera(position: eye, forward: forward, right: right, up: up, fovYRadians: fovYRadians, aspect: aspect)
+    camera = cam
+    guard let camBuf = device.makeBuffer(length: MemoryLayout<Camera>.stride, options: .storageModeShared) else { return nil }
+    cameraBuffer = camBuf
+    memcpy(cameraBuffer.contents(), &camera, MemoryLayout<Camera>.stride)
+
     semaphore = DispatchSemaphore.init(value: maxFramesInFlight)
     hash = 100
     description = "Renderer"
@@ -42,7 +70,9 @@ class Renderer: MTKViewDelegate {
   }
   
   func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
-    return
+    let aspect = Float(size.width / max(size.height, 1))
+    camera.aspect = aspect
+    memcpy(cameraBuffer.contents(), &camera, MemoryLayout<Camera>.stride)
   }
   
   func draw(in view: MTKView) {
@@ -52,8 +82,10 @@ class Renderer: MTKViewDelegate {
     else { fatalError() }
     computeEncoder.setComputePipelineState(pipeline.rayGenPipelineState)
     computeEncoder.setTexture(view.currentDrawable?.texture, index: 0)
+    computeEncoder.setBuffer(cameraBuffer, offset: 0, index: 1)
 
     computeEncoder.useResource(pipeline.accelerationStructure, usage: .read)
+    computeEncoder.useResource(cameraBuffer, usage: .read)
     computeEncoder.setAccelerationStructure(pipeline.accelerationStructure, bufferIndex: 0)
     let w = Int(view.drawableSize.width)
     let h = Int(view.drawableSize.height)

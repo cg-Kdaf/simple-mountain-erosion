@@ -9,33 +9,55 @@
 using namespace metal;
 using namespace raytracing;
 
-inline ray generateCameraRay(uint2 gid, uint2 viewportSize)
+struct Camera {
+  float3 position;
+  float3 forward;
+  float3 right;
+  float3 up;
+  float fovYRadians;
+  float aspect;
+};
+
+inline ray generateCameraRay(uint2 gid, uint2 viewportSize, Camera camera)
 {
-    // Map pixel center to NDC [-1, 1]
-    float2 uv = (float2(gid) + 0.5) / float2(viewportSize);
-    float2 ndc = uv * 2.0 - 1.0;
+  // 1. Map pixel center to NDC [-1, 1]
+  float2 uv = (float2(gid) + 0.5) / float2(viewportSize);
+  float2 ndc = uv * 2.0 - 1.0;
 
-    // Construct a ray starting at origin pointing forward (+Z). You can extend this later.
-    float3 origin = float3(0.0, 0.0, -1.5);
+  // 2. Calculate the size of the view plane based on FOV
+  // tan(fov/2) gives us the height of the image plane at 1 unit distance
+  float tanHalfFov = tan(camera.fovYRadians * 0.5);
 
-    // Use ndc.x/y to slightly vary direction so the image isn't uniform
-    float3 dir = normalize(float3(ndc.x, -ndc.y, 1.0));
+  // 3. Calculate offsets on the image plane
+  // Scale X by aspect ratio to prevent distortion
+  float screenX = ndc.x * camera.aspect * tanHalfFov;
+  
+  // Invert Y because screen coordinates (Y+) usually point down,
+  // while world space Up (Y+) points up.
+  float screenY = -ndc.y * tanHalfFov;
 
-    constexpr float tMin = 0.0;
-    constexpr float tMax = 1e6;
+  // 4. Construct direction: Forward + projected offsets on Right and Up vectors
+  float3 dir = normalize(camera.forward + (camera.right * screenX) + (camera.up * screenY));
 
-    return ray(origin, dir, tMin, tMax);
+  // 5. Origin is the camera position
+  float3 origin = camera.position;
+
+  constexpr float tMin = 0.0;
+  constexpr float tMax = 1e6;
+
+  return ray(origin, dir, tMin, tMax);
 }
 
 kernel void compute_main(texture2d<float, access::write> outTexture [[texture(0)]],
                          uint2 gid [[thread_position_in_grid]],
-                         metal::raytracing::primitive_acceleration_structure accelerationStructure   [[buffer(0)]])
+                         metal::raytracing::primitive_acceleration_structure accelerationStructure   [[buffer(0)]],
+                         constant Camera &camera [[buffer(1)]])
 {
   uint2 size = uint2(outTexture.get_width(), outTexture.get_height());
   if (gid.x >= size.x || gid.y >= size.y) { return; }
 
   // Generate camera ray
-  ray r = generateCameraRay(gid, size);
+  ray r = generateCameraRay(gid, size, camera);
 
   // Intersect with the acceleration structure
   intersector<triangle_data> intersector;

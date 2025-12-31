@@ -8,10 +8,6 @@
 import MetalKit
 import MetalPerformanceShaders
 
-/// Acceleration structure building utilities.
-
- // MARK: - AccelerationStructureBuilder
-
 final class AccelerationStructureBuilder {
     let device: MTLDevice
     let commandQueue: MTLCommandQueue
