@@ -46,9 +46,6 @@ kernel void compute_main(texture2d<float, access::write> outTexture [[texture(0)
   float3 color = mix(float3(0.6, 0.8, 1.0), float3(0.1, 0.2, 0.4), uv.y);
 
   if (intersection.distance > 0.0) {
-    // Reconstruct hit position
-    float3 P = r.origin + intersection.distance * r.direction;
-
     // Interpolate vertex normals from primitive data (packed as n0, n1, n2)
     const device float* primitive_data = (const device float*)intersection.primitive_data;
     float3 n0 = float3(primitive_data[0], primitive_data[1], primitive_data[2]);
