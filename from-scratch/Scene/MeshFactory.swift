@@ -20,7 +20,7 @@ public enum MeshFactory {
   public static func makeBasicPlane(allocator: MTKMeshBufferAllocator, device: MTLDevice) -> MTKMesh {
     let mdlMesh = MDLMesh.newPlane(
       withDimensions: [2.0, 2.0],
-      segments: [3,3],
+      segments: [4,4],
       geometryType: .triangles,
       allocator: allocator)
     return try! MTKMesh(mesh: mdlMesh, device: device)

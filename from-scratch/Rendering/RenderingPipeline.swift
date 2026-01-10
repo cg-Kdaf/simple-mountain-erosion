@@ -92,12 +92,21 @@ func buildBLAS(device: MTLDevice, scene: SceneContainer) -> MTLAccelerationStruc
 
 // MARK: - RenderingPipeline
 
+struct Vertex {
+  let position: SIMD3<Float>
+  let normal: SIMD3<Float>
+  let uv: SIMD2<Float>
+}
+
 /// Creates the compute pipeline and owns the BLAS builder for the current scene.
 final class RenderingPipeline {
   let queue: MTLCommandQueue
   let device: MTLDevice
   let rayGenPipelineState: MTLComputePipelineState
-  let accelerationStructure: MTLAccelerationStructure
+  var displacePipelineState: MTLComputePipelineState?
+  let accelerationStructureBuilder: AccelerationStructureBuilder
+  private let library: MTLLibrary
+  
   
   init(device: MTLDevice, view: MTKView, scene: SceneContainer) {
     self.device = device
@@ -108,14 +117,20 @@ final class RenderingPipeline {
     guard let library = device.makeDefaultLibrary() else {
       preconditionFailure("Failed to load default Metal library")
     }
+    self.library = library
     
     let pipelineDescriptor = MTLComputePipelineDescriptor()
     pipelineDescriptor.computeFunction = library.makeFunction(name: "compute_main")
     let options: MTLPipelineOption = [.bindingInfo, .bufferTypeInfo]
     let result = try! device.makeComputePipelineState(descriptor: pipelineDescriptor, options: options)
     rayGenPipelineState = result.0
-    let ASBuilder = AccelerationStructureBuilder(device: device, queue: queue)
-    accelerationStructure = ASBuilder.buildAccelerationStructure(for: [buildBLAS(device: device, scene: scene)])
+    accelerationStructureBuilder = AccelerationStructureBuilder(device: device, queue: queue)
+    accelerationStructureBuilder.buildAccelerationStructure(for: [buildBLAS(device: device, scene: scene)])
   }
   
+  func buildVertexPipeline(initial_buffer: MTLBuffer) {
+    // Create the vertex displacement pipeline
+    guard let displaceFunction = library.makeFunction(name: "compute_vertices") else { fatalError() }
+    displacePipelineState = try! device.makeComputePipelineState(function: displaceFunction)
+  }
 }

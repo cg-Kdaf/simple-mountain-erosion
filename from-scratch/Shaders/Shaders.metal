@@ -48,9 +48,61 @@ inline ray generateCameraRay(uint2 gid, uint2 viewportSize, Camera camera)
   return ray(origin, dir, tMin, tMax);
 }
 
+struct Vertex {
+  float3 position;
+  float3 normal;
+  float2 uv;
+};
+
+float getDisplacement(float2 uv) {
+    return cos(uv.x / 100.0) + sin(uv.y / 100.0);
+}
+
+kernel void compute_vertices(
+    device const Vertex* inVertices [[buffer(0)]],
+    device Vertex* outVertices [[buffer(1)]],
+    constant uint& vertexCount [[buffer(2)]],
+    uint id [[thread_position_in_grid]])
+{
+  if (id >= vertexCount) { return; }
+  
+  Vertex v = inVertices[id];
+  float3 N = float3(0.0, 1.0, 0.0);
+  float2 uv = v.uv;
+  
+  float scale = 0.2;
+  float epsilon = 0.001; // The "tiny step" size
+  
+  float h_center = getDisplacement(uv);                 // Current point
+  float h_u      = getDisplacement(uv + float2(epsilon, 0)); // Neighbor +U
+  float h_v      = getDisplacement(uv + float2(0, epsilon)); // Neighbor +V
+  
+  // --- STEP 2: Calculate Slope (Rise / Run) ---
+  float dh_du = (h_u - h_center) / epsilon;
+  float dh_dv = (h_v - h_center) / epsilon;
+  
+  // --- STEP 3: Construct Tangent Basis ---
+  // We need to know which way "U" and "V" point in 3D space relative to the normal.
+  // If your mesh doesn't have tangents, we estimate them (ok for spheres/grids):
+  float3 helper = abs(N.y) > 0.99 ? float3(0, 0, 1) : float3(0, 1, 0);
+  float3 T = normalize(cross(helper, N)); // Tangent
+  float3 B = normalize(cross(N, T));      // Bitangent
+  
+  // --- STEP 4: Perturb the Normal ---
+  // Combine the slopes along the T and B vectors
+  // Note: The '-' sign is because "uphill" means the normal tilts "backwards"
+  float3 gradient = (T * dh_du + B * dh_dv) * scale;
+  float3 N_new = normalize(N - gradient);
+  
+  // --- STEP 5: Write Output ---
+  outVertices[id] = inVertices[id];
+//  outVertices[id].position.y += h_center * scale;
+  outVertices[id].normal = N_new;
+}
+
 kernel void compute_main(texture2d<float, access::write> outTexture [[texture(0)]],
                          uint2 gid [[thread_position_in_grid]],
-                         metal::raytracing::primitive_acceleration_structure accelerationStructure   [[buffer(0)]],
+                         metal::raytracing::primitive_acceleration_structure accelerationStructure [[buffer(0)]],
                          constant Camera &camera [[buffer(1)]])
 {
   uint2 size = uint2(outTexture.get_width(), outTexture.get_height());

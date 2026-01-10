@@ -24,7 +24,8 @@ class Renderer: MTKViewDelegate {
   var description: String
   var hash: Int
   var superclass: AnyClass?
-  var scene: SceneContainer
+  var vertexBufferOriginal: MTLBuffer
+  var scene_displaced: SceneContainer
   var pipeline: RenderingPipeline
 
   var camera: Camera
@@ -47,7 +48,7 @@ class Renderer: MTKViewDelegate {
 
     let size = metalKitView.drawableSize
     let aspect = Float(size.width / max(size.height, 1))
-    let eye = SIMD3<Float>(1.5, 1.5, 1.5)
+    let eye = SIMD3<Float>(1.0, 1.0, 1.5)
     let lookAt = SIMD3<Float>(0, 0, 0)
     let worldUp = SIMD3<Float>(0, 1, 0)
     let forward = simd_normalize(lookAt - eye)
@@ -64,9 +65,26 @@ class Renderer: MTKViewDelegate {
     hash = 100
     description = "Renderer"
     
-    scene = BasicScene(mesh: MeshFactory.makeBasicPlane(allocator: MTKMeshBufferAllocator(device: device), device: device))
+    let mesh = MeshFactory.makeBasicPlane(allocator: MTKMeshBufferAllocator(device: device), device: device)
+    scene_displaced = BasicScene(mesh: mesh)
 
-    pipeline = RenderingPipeline(device: self.device, view: metalKitView, scene: scene)
+    pipeline = RenderingPipeline(device: self.device, view: metalKitView, scene: scene_displaced)
+    pipeline.buildVertexPipeline(initial_buffer: (scene_displaced.mesh.vertexBuffers.first!.buffer))
+    vertexBufferOriginal = device.makeBuffer(length: scene_displaced.mesh.vertexBuffers[0].length,
+                                             options: .storageModePrivate)!
+    do { // Copy the buffer to always have the original
+      guard let commandBuffer = pipeline.queue.makeCommandBuffer(),
+            let blitEncoder = commandBuffer.makeBlitCommandEncoder()
+      else { return }
+      
+      blitEncoder.label = "One-off Buffer Copy"
+      blitEncoder.copy(from: scene_displaced.mesh.vertexBuffers[0].buffer, sourceOffset: 0,
+                       to: vertexBufferOriginal, destinationOffset: 0,
+                       size: scene_displaced.mesh.vertexBuffers[0].length)
+      blitEncoder.endEncoding()
+      commandBuffer.commit()
+      commandBuffer.waitUntilCompleted()
+    }
   }
   
   func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
@@ -77,16 +95,49 @@ class Renderer: MTKViewDelegate {
   
   func draw(in view: MTKView) {
     semaphore.wait()
-    guard let commandBuffer = pipeline.queue.makeCommandBuffer(),
-          let computeEncoder = commandBuffer.makeComputeCommandEncoder()
+    guard let commandBuffer = pipeline.queue.makeCommandBuffer()
     else { fatalError() }
+    
+    
+    // --- STEP 1: Displacement Encoder ---
+    guard let displaceEncoder = commandBuffer.makeComputeCommandEncoder()
+    else { fatalError() }
+
+    displaceEncoder.label = "Vertex Displacement Pass"
+    displaceEncoder.setComputePipelineState(pipeline.displacePipelineState!)
+
+    // Bind Buffers according to your shader signature:
+    displaceEncoder.setBuffer(vertexBufferOriginal, offset: 0, index: 0)
+    displaceEncoder.setBuffer((scene_displaced.mesh.vertexBuffers.first!.buffer), offset: 0, index: 1)
+    var vCount = UInt32(scene_displaced.mesh.vertexCount)
+    displaceEncoder.setBytes(&vCount,
+                             length: MemoryLayout<UInt32>.size,
+                             index: 2)
+
+    // Calculate Dispatch Size (1D Grid for vertices)
+    // Unlike your ray tracer which uses W x H, this uses a linear array of vertices.
+    let threadGroupSize = MTLSize(width: 64, height: 1, depth: 1)
+    let threadGroups = MTLSize(width: (scene_displaced.mesh.vertexCount + 63) / 64, height: 1, depth: 1)
+
+    displaceEncoder.dispatchThreadgroups(threadGroups, threadsPerThreadgroup: threadGroupSize)
+    displaceEncoder.endEncoding()
+    
+    // ... [Step 2: Refit Acceleration Structure] ...
+    pipeline.accelerationStructureBuilder.refit(commandBuffer: commandBuffer)
+    
+    
+    // ... [Step 3: Ray Tracing Encoder] ...
+    guard let computeEncoder = commandBuffer.makeComputeCommandEncoder()
+    else { fatalError() }
+    computeEncoder.label = "RT Pass"
+    
     computeEncoder.setComputePipelineState(pipeline.rayGenPipelineState)
     computeEncoder.setTexture(view.currentDrawable?.texture, index: 0)
     computeEncoder.setBuffer(cameraBuffer, offset: 0, index: 1)
 
-    computeEncoder.useResource(pipeline.accelerationStructure, usage: .read)
+    computeEncoder.useResource(pipeline.accelerationStructureBuilder.accelerationStructure, usage: .read)
     computeEncoder.useResource(cameraBuffer, usage: .read)
-    computeEncoder.setAccelerationStructure(pipeline.accelerationStructure, bufferIndex: 0)
+    computeEncoder.setAccelerationStructure(pipeline.accelerationStructureBuilder.accelerationStructure, bufferIndex: 0)
     let w = Int(view.drawableSize.width)
     let h = Int(view.drawableSize.height)
     let tg = MTLSize(width: 8, height: 8, depth: 1)
