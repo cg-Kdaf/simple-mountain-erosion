@@ -34,10 +34,16 @@ class Renderer: MTKViewDelegate {
   var camera: Camera
   var cameraBuffer: MTLBuffer
 
+  // Orbit parameters controlled from SwiftUI gestures
+  private var orbitYaw: Double = 0.0
+  private var orbitPitch: Double = -0.5
+  private var orbitDistance: Double = 3.0
+
   init?(metalKitView: MTKView) {
     metalKitView.colorPixelFormat = .rgba16Float
     metalKitView.sampleCount = 1
     metalKitView.drawableSize = metalKitView.frame.size
+    metalKitView.layoutSubtreeIfNeeded()
     metalKitView.framebufferOnly = false
     
     // Ensure the MTKView has a device
@@ -92,6 +98,16 @@ class Renderer: MTKViewDelegate {
       commandBuffer.commit()
       commandBuffer.waitUntilCompleted()
     }
+  }
+  
+  private func updateCameraBasis(lookAt target: SIMD3<Float>) {
+    let worldUp = SIMD3<Float>(0, 1, 0)
+    let forward = simd_normalize(target - camera.position)
+    let right = simd_normalize(simd_cross(forward, worldUp))
+    let up = simd_normalize(simd_cross(right, forward))
+    camera.forward = forward
+    camera.right = right
+    camera.up = up
   }
   
   func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
@@ -234,3 +250,24 @@ class Renderer: MTKViewDelegate {
   }
 }
 
+extension Renderer: OrbitControllable {
+    func setOrbit(yaw: Double, pitch: Double, distance: Double) {
+        // Cache values
+        orbitYaw = yaw
+        orbitPitch = max(-1.4, min(1.4, pitch)) // clamp to avoid gimbal flip
+        orbitDistance = max(0.1, min(100.0, distance))
+
+        // Target the origin (0,0,0). Compute spherical coordinates to Cartesian.
+        let target = SIMD3<Float>(0, 0, 0)
+        let x = Float(cos(orbitYaw) * cos(orbitPitch) * orbitDistance)
+        let y = Float(sin(orbitPitch) * orbitDistance)
+        let z = Float(sin(orbitYaw) * cos(orbitPitch) * orbitDistance)
+        camera.position = SIMD3<Float>(x, y, z)
+
+        // Update basis vectors to look at target
+        updateCameraBasis(lookAt: target)
+
+        // Write the updated camera into the GPU buffer
+        memcpy(cameraBuffer.contents(), &camera, MemoryLayout<Camera>.stride)
+    }
+}
