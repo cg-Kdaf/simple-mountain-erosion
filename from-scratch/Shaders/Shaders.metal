@@ -62,6 +62,7 @@ kernel void compute_vertices(
     device const Vertex* inVertices [[buffer(0)]],
     device Vertex* outVertices [[buffer(1)]],
     constant uint& vertexCount [[buffer(2)]],
+    constant float& time [[buffer(3)]],
     uint id [[thread_position_in_grid]])
 {
   if (id >= vertexCount) { return; }
@@ -71,7 +72,7 @@ kernel void compute_vertices(
   
   float scale = 0.2;
   
-  float h_center = getDisplacement(uv);
+  float h_center = getDisplacement(uv + float2(time));
   outVertices[id] = inVertices[id];
   outVertices[id].position.y += h_center * scale;
 }

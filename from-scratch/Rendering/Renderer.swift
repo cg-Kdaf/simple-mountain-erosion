@@ -19,6 +19,7 @@ class Renderer: MTKViewDelegate {
   }
 
   let device: MTLDevice
+  let dateStart = NSDate()
   let maxFramesInFlight = 1
   var semaphore: DispatchSemaphore!
   var description: String
@@ -103,7 +104,8 @@ class Renderer: MTKViewDelegate {
     semaphore.wait()
     guard let commandBuffer = pipeline.queue.makeCommandBuffer()
     else { fatalError() }
-    
+
+    var currentTime: Float = Float(dateStart.timeIntervalSinceNow)
     
     // --- STEP 1: Displacement Encoder ---
     guard let displaceEncoder = commandBuffer.makeComputeCommandEncoder()
@@ -119,6 +121,9 @@ class Renderer: MTKViewDelegate {
     displaceEncoder.setBytes(&vCount,
                              length: MemoryLayout<UInt32>.size,
                              index: 2)
+    displaceEncoder.setBytes(&currentTime,
+                             length: MemoryLayout<Float>.size,
+                             index: 3)
 
     // Calculate Dispatch Size (1D Grid for vertices)
     // Unlike your ray tracer which uses W x H, this uses a linear array of vertices.
