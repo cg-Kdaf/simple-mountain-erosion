@@ -55,7 +55,7 @@ struct Vertex {
 };
 
 float getDisplacement(float2 uv) {
-    return cos(uv.x / 100.0) + sin(uv.y / 100.0);
+    return cos(uv.x * 10.0) + sin(uv.y * 10.0);
 }
 
 kernel void compute_vertices(
@@ -67,43 +67,113 @@ kernel void compute_vertices(
   if (id >= vertexCount) { return; }
   
   Vertex v = inVertices[id];
-  float3 N = float3(0.0, 1.0, 0.0);
   float2 uv = v.uv;
   
   float scale = 0.2;
-  float epsilon = 0.001; // The "tiny step" size
   
-  float h_center = getDisplacement(uv);                 // Current point
-  float h_u      = getDisplacement(uv + float2(epsilon, 0)); // Neighbor +U
-  float h_v      = getDisplacement(uv + float2(0, epsilon)); // Neighbor +V
-  
-  // --- STEP 2: Calculate Slope (Rise / Run) ---
-  float dh_du = (h_u - h_center) / epsilon;
-  float dh_dv = (h_v - h_center) / epsilon;
-  
-  // --- STEP 3: Construct Tangent Basis ---
-  // We need to know which way "U" and "V" point in 3D space relative to the normal.
-  // If your mesh doesn't have tangents, we estimate them (ok for spheres/grids):
-  float3 helper = abs(N.y) > 0.99 ? float3(0, 0, 1) : float3(0, 1, 0);
-  float3 T = normalize(cross(helper, N)); // Tangent
-  float3 B = normalize(cross(N, T));      // Bitangent
-  
-  // --- STEP 4: Perturb the Normal ---
-  // Combine the slopes along the T and B vectors
-  // Note: The '-' sign is because "uphill" means the normal tilts "backwards"
-  float3 gradient = (T * dh_du + B * dh_dv) * scale;
-  float3 N_new = normalize(N - gradient);
-  
-  // --- STEP 5: Write Output ---
+  float h_center = getDisplacement(uv);
   outVertices[id] = inVertices[id];
-//  outVertices[id].position.y += h_center * scale;
-  outVertices[id].normal = N_new;
+  outVertices[id].position.y += h_center * scale;
+}
+
+// Computes smooth per-vertex normals by averaging adjacent triangle normals on a regular grid.
+// Expects:
+//  - inVertices: original (pre-normal) vertices (unused here but kept for symmetry)
+//  - outVertices: vertices with displaced positions to read/write normals
+//  - vertexCount: total vertex count
+//  - vertsPerRow, vertsPerCol: grid dimensions (row-major, vertsPerRow = segmentsX + 1)
+kernel void update_normals(
+    device Vertex* vertices [[buffer(0)]],
+    constant uint& vertexCount [[buffer(1)]],
+    constant uint& vertsPerRow [[buffer(2)]],
+    constant uint& vertsPerCol [[buffer(3)]],
+    uint id [[thread_position_in_grid]])
+{
+  if (id >= vertexCount) { return; }
+
+  uint row = id / vertsPerRow;
+  uint col = id % vertsPerRow;
+
+  float3 accum = float3(0.0);
+
+  // Helper to fetch displaced position from outVertices
+  auto P = [&](uint r, uint c) -> float3 {
+    uint idx = r * vertsPerRow + c;
+    return vertices[idx].position;
+  };
+
+  // For each of up to four adjacent quads around the vertex, accumulate the two triangle normals
+  // Quad to the bottom-left (r-1,c-1) .. (r,c)
+  if (row > 0 && col > 0) {
+    float3 p00 = P(row - 1, col - 1);
+    float3 p10 = P(row - 1, col    );
+    float3 p01 = P(row,     col - 1);
+    float3 p11 = P(row,     col    );
+    // Triangles: (p00,p10,p01) and (p01,p10,p11)
+    float3 n0 = cross(p10 - p00, p01 - p00);
+    float3 n1 = cross(p11 - p01, p10 - p01);
+    if (n0.y < 0.0) n0 = -n0;
+    if (n1.y < 0.0) n1 = -n1;
+    accum += n0;
+    accum += n1;
+  }
+
+  // Quad to the bottom-right (r-1,c) .. (r,c+1)
+  if (row > 0 && col + 1 < vertsPerRow) {
+    float3 p00 = P(row - 1, col    );
+    float3 p10 = P(row - 1, col + 1);
+    float3 p01 = P(row,     col    );
+    float3 p11 = P(row,     col + 1);
+    float3 n0 = cross(p10 - p00, p01 - p00);
+    float3 n1 = cross(p11 - p01, p10 - p01);
+    if (n0.y < 0.0) n0 = -n0;
+    if (n1.y < 0.0) n1 = -n1;
+    accum += n0;
+    accum += n1;
+  }
+
+  // Quad to the top-left (r,c-1) .. (r+1,c)
+  if (row + 1 < vertsPerCol && col > 0) {
+    float3 p00 = P(row,     col - 1);
+    float3 p10 = P(row,     col    );
+    float3 p01 = P(row + 1, col - 1);
+    float3 p11 = P(row + 1, col    );
+    float3 n0 = cross(p10 - p00, p01 - p00);
+    float3 n1 = cross(p11 - p01, p10 - p01);
+    if (n0.y < 0.0) n0 = -n0;
+    if (n1.y < 0.0) n1 = -n1;
+    accum += n0;
+    accum += n1;
+  }
+
+  // Quad to the top-right (r,c) .. (r+1,c+1)
+  if (row + 1 < vertsPerCol && col + 1 < vertsPerRow) {
+    float3 p00 = P(row,     col    );
+    float3 p10 = P(row,     col + 1);
+    float3 p01 = P(row + 1, col    );
+    float3 p11 = P(row + 1, col + 1);
+    float3 n0 = cross(p10 - p00, p01 - p00);
+    float3 n1 = cross(p11 - p01, p10 - p01);
+    if (n0.y < 0.0) n0 = -n0;
+    if (n1.y < 0.0) n1 = -n1;
+    accum += n0;
+    accum += n1;
+  }
+
+  float3 N = (length(accum) > 0.0) ? normalize(accum) : float3(0.0, 1.0, 0.0);
+
+  // Write back normal while preserving displaced position and uv
+  Vertex v = vertices[id];
+  v.normal = N;
+  vertices[id] = v;
 }
 
 kernel void compute_main(texture2d<float, access::write> outTexture [[texture(0)]],
                          uint2 gid [[thread_position_in_grid]],
                          metal::raytracing::primitive_acceleration_structure accelerationStructure [[buffer(0)]],
-                         constant Camera &camera [[buffer(1)]])
+                         device const Vertex* vertices [[buffer(1)]],
+                         device const uint32_t* indices [[buffer(2)]],
+                         constant Camera &camera [[buffer(3)]])
 {
   uint2 size = uint2(outTexture.get_width(), outTexture.get_height());
   if (gid.x >= size.x || gid.y >= size.y) { return; }
@@ -120,14 +190,17 @@ kernel void compute_main(texture2d<float, access::write> outTexture [[texture(0)
   float3 color = mix(float3(0.6, 0.8, 1.0), float3(0.1, 0.2, 0.4), uv.y);
 
   if (intersection.distance > 0.0) {
-    // Interpolate vertex normals from primitive data (packed as n0, n1, n2)
-    const device float* primitive_data = (const device float*)intersection.primitive_data;
-    float3 n0 = float3(primitive_data[0], primitive_data[1], primitive_data[2]);
-    float3 n1 = float3(primitive_data[3], primitive_data[4], primitive_data[5]);
-    float3 n2 = float3(primitive_data[6], primitive_data[7], primitive_data[8]);
-
-    float2 bc = intersection.triangle_barycentric_coord; // (b1, b2)
-    float w = 1.0 - bc.x - bc.y;                         // b0
+    uint triID = intersection.primitive_id;
+    uint i0 = indices[triID * 3 + 0];
+    uint i1 = indices[triID * 3 + 1];
+    uint i2 = indices[triID * 3 + 2];
+    
+    float3 n0 = vertices[i0].normal;
+    float3 n1 = vertices[i1].normal;
+    float3 n2 = vertices[i2].normal;
+    
+    float2 bc = intersection.triangle_barycentric_coord;
+    float w = 1.0 - bc.x - bc.y;
     float3 N = normalize(n0 * w + n1 * bc.x + n2 * bc.y);
 
     // Simple Lambert shading
@@ -151,6 +224,7 @@ kernel void compute_main(texture2d<float, access::write> outTexture [[texture(0)
 
     color = clamp(shaded, 0.0, 1.0);
   }
+  
 
   outTexture.write(float4(color, 1.0), gid);
 }

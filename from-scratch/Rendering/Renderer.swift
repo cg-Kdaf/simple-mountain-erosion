@@ -27,6 +27,8 @@ class Renderer: MTKViewDelegate {
   var vertexBufferOriginal: MTLBuffer
   var scene_displaced: SceneContainer
   var pipeline: RenderingPipeline
+  
+  var resolution: UInt
 
   var camera: Camera
   var cameraBuffer: MTLBuffer
@@ -65,7 +67,11 @@ class Renderer: MTKViewDelegate {
     hash = 100
     description = "Renderer"
     
-    let mesh = MeshFactory.makeBasicPlane(allocator: MTKMeshBufferAllocator(device: device), device: device)
+    resolution = 1200
+    let mesh = MeshFactory.makeExplicitPlane(allocator: MTKMeshBufferAllocator(device: device),
+                                             device: device,
+                                             segmentsX: Int(resolution),
+                                             segmentsY: Int(resolution))
     scene_displaced = BasicScene(mesh: mesh)
 
     pipeline = RenderingPipeline(device: self.device, view: metalKitView, scene: scene_displaced)
@@ -102,7 +108,7 @@ class Renderer: MTKViewDelegate {
     // --- STEP 1: Displacement Encoder ---
     guard let displaceEncoder = commandBuffer.makeComputeCommandEncoder()
     else { fatalError() }
-
+    
     displaceEncoder.label = "Vertex Displacement Pass"
     displaceEncoder.setComputePipelineState(pipeline.displacePipelineState!)
 
@@ -122,6 +128,29 @@ class Renderer: MTKViewDelegate {
     displaceEncoder.dispatchThreadgroups(threadGroups, threadsPerThreadgroup: threadGroupSize)
     displaceEncoder.endEncoding()
     
+    
+    guard let normalEncoder = commandBuffer.makeComputeCommandEncoder()
+    else { fatalError() }
+    
+    normalEncoder.label = "Vertex Normal refine Pass"
+    normalEncoder.setComputePipelineState(pipeline.normalPipelineState!)
+
+    // Bind Buffers according to your shader signature:
+    normalEncoder.setBuffer((scene_displaced.mesh.vertexBuffers.first!.buffer), offset: 0, index: 0)
+    normalEncoder.setBytes(&vCount,
+                             length: MemoryLayout<UInt32>.size,
+                             index: 1)
+    var resolution_ = UInt32(resolution)
+    normalEncoder.setBytes(&resolution_,
+                             length: MemoryLayout<UInt32>.size,
+                             index: 2)
+    normalEncoder.setBytes(&resolution_,
+                             length: MemoryLayout<UInt32>.size,
+                             index: 3)
+
+    normalEncoder.dispatchThreadgroups(threadGroups, threadsPerThreadgroup: threadGroupSize)
+    normalEncoder.endEncoding()
+    
     // ... [Step 2: Refit Acceleration Structure] ...
     pipeline.accelerationStructureBuilder.refit(commandBuffer: commandBuffer)
     
@@ -133,7 +162,9 @@ class Renderer: MTKViewDelegate {
     
     computeEncoder.setComputePipelineState(pipeline.rayGenPipelineState)
     computeEncoder.setTexture(view.currentDrawable?.texture, index: 0)
-    computeEncoder.setBuffer(cameraBuffer, offset: 0, index: 1)
+    computeEncoder.setBuffer(scene_displaced.mesh.vertexBuffers.first!.buffer, offset: 0, index: 1)
+    computeEncoder.setBuffer(scene_displaced.mesh.submeshes.first!.indexBuffer.buffer, offset: 0, index: 2)
+    computeEncoder.setBuffer(cameraBuffer, offset: 0, index: 3)
 
     computeEncoder.useResource(pipeline.accelerationStructureBuilder.accelerationStructure, usage: .read)
     computeEncoder.useResource(cameraBuffer, usage: .read)

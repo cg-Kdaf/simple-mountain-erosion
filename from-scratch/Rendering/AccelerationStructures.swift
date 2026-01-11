@@ -23,7 +23,7 @@ final class AccelerationStructureBuilder {
   func buildAccelerationStructure(for geometries: [MTLAccelerationStructureGeometryDescriptor]) {
     descriptor = MTLPrimitiveAccelerationStructureDescriptor()
     descriptor.geometryDescriptors = geometries
-    descriptor.usage = [.refit]
+    descriptor.usage = [.refit, .minimizeMemory]
     
     let sizes = device.accelerationStructureSizes(descriptor: descriptor)
     
