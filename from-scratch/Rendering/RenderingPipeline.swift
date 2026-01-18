@@ -48,6 +48,7 @@ final class RenderingPipeline {
   let device: MTLDevice
   let rayGenPipelineState: MTLComputePipelineState
   var displacePipelineState: MTLComputePipelineState?
+  var displaceTexturePipelineState: MTLComputePipelineState?
   var normalPipelineState: MTLComputePipelineState?
   let accelerationStructureBuilder: AccelerationStructureBuilder
   private let library: MTLLibrary
@@ -77,6 +78,8 @@ final class RenderingPipeline {
     // Create the vertex displacement pipeline
     guard let displaceFunction = library.makeFunction(name: "compute_vertices") else { fatalError() }
     displacePipelineState = try! device.makeComputePipelineState(function: displaceFunction)
+    guard let displaceTextureFunction = library.makeFunction(name: "compute_texture") else { fatalError() }
+    displaceTexturePipelineState = try! device.makeComputePipelineState(function: displaceTextureFunction)
     guard let normalsFunction = library.makeFunction(name: "update_normals") else { fatalError() }
     normalPipelineState = try! device.makeComputePipelineState(function: normalsFunction)
   }

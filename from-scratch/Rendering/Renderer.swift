@@ -26,6 +26,7 @@ class Renderer: MTKViewDelegate {
   var hash: Int
   var superclass: AnyClass?
   var vertexBufferOriginal: MTLBuffer
+  var displacementTexture: MTLTexture
   var scene_displaced: SceneContainer
   var pipeline: RenderingPipeline
   
@@ -80,6 +81,13 @@ class Renderer: MTKViewDelegate {
                                              segmentsX: Int(resolution),
                                              segmentsY: Int(resolution))
     scene_displaced = BasicScene(mesh: mesh)
+    let textureDescriptor = MTLTextureDescriptor.texture2DDescriptor(
+      pixelFormat: .r16Float,
+      width: Int(resolution),
+      height: Int(resolution),
+      mipmapped: false)
+    textureDescriptor.usage = [.shaderWrite, .shaderRead]
+    displacementTexture = device.makeTexture(descriptor: textureDescriptor)!
 
     pipeline = RenderingPipeline(device: self.device, view: metalKitView, scene: scene_displaced)
     pipeline.buildVertexPipeline(initial_buffer: (scene_displaced.mesh.vertexBuffers.first!.buffer))
@@ -123,6 +131,27 @@ class Renderer: MTKViewDelegate {
 
     var currentTime: Float = Float(dateStart.timeIntervalSinceNow)
     
+    // --- STEP 0: Displacement texture update ---
+    guard let displaceTextureEncoder = commandBuffer.makeComputeCommandEncoder()
+    else { fatalError() }
+    
+    displaceTextureEncoder.label = "Displace Texture Pass"
+    displaceTextureEncoder.setComputePipelineState(pipeline.displaceTexturePipelineState!)
+    displaceTextureEncoder.setTexture(displacementTexture, index: 0)
+    displaceTextureEncoder.setBytes(&currentTime,
+                                    length: MemoryLayout<Float>.size,
+                                    index: 0)
+
+    let w_texture = pipeline.displaceTexturePipelineState!.threadExecutionWidth
+    let h_texture = pipeline.displaceTexturePipelineState!.maxTotalThreadsPerThreadgroup / w_texture
+    let threadsPerThreadgroup = MTLSizeMake(w_texture, h_texture, 1)
+    let threadsPerGrid = MTLSize(width: (displacementTexture.width + w_texture - 1) / w_texture,
+                                 height: (displacementTexture.height + h_texture - 1) / h_texture,
+                                 depth: 1)
+
+    displaceTextureEncoder.dispatchThreadgroups(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
+    displaceTextureEncoder.endEncoding()
+    
     // --- STEP 1: Displacement Encoder ---
     guard let displaceEncoder = commandBuffer.makeComputeCommandEncoder()
     else { fatalError() }
@@ -137,10 +166,8 @@ class Renderer: MTKViewDelegate {
     displaceEncoder.setBytes(&vCount,
                              length: MemoryLayout<UInt32>.size,
                              index: 2)
-    displaceEncoder.setBytes(&currentTime,
-                             length: MemoryLayout<Float>.size,
-                             index: 3)
-
+    displaceEncoder.setTexture(displacementTexture, index: 0)
+    
     // Calculate Dispatch Size (1D Grid for vertices)
     // Unlike your ray tracer which uses W x H, this uses a linear array of vertices.
     let threadGroupSize = MTLSize(width: 64, height: 1, depth: 1)

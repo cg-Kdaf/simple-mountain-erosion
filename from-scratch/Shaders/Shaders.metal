@@ -58,23 +58,36 @@ float getDisplacement(float2 uv) {
     return cos(uv.x * 10.0) + sin(uv.y * 10.0);
 }
 
+kernel void compute_texture(
+  texture2d<float, access::read_write> heightTex [[texture(0)]],
+  constant float& time [[buffer(0)]],
+  uint2 gid [[thread_position_in_grid]])
+{
+  uint width = heightTex.get_width();
+  uint height = heightTex.get_height();
+  if (gid.x >= width || gid.y >= height) { return; }
+
+  float2 uv = float2(gid) / float2(width, height);
+
+  heightTex.write(getDisplacement(uv + float2(time)), gid);
+}
+
 kernel void compute_vertices(
     device const Vertex* inVertices [[buffer(0)]],
     device Vertex* outVertices [[buffer(1)]],
     constant uint& vertexCount [[buffer(2)]],
-    constant float& time [[buffer(3)]],
+    texture2d<float, access::read_write> heightTex [[texture(0)]],
     uint id [[thread_position_in_grid]])
 {
   if (id >= vertexCount) { return; }
   
   Vertex v = inVertices[id];
-  float2 uv = v.uv;
   
+  float height = heightTex.read(uint2(v.uv * float2(heightTex.get_width(),
+                                                    heightTex.get_height())))[0];
+
   float scale = 0.2;
-  
-  float h_center = getDisplacement(uv + float2(time));
-  outVertices[id] = inVertices[id];
-  outVertices[id].position.y += h_center * scale;
+  outVertices[id].position.y = v.position.y + height * scale;
 }
 
 // Computes smooth per-vertex normals by averaging adjacent triangle normals on a regular grid.
