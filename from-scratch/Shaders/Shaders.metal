@@ -84,7 +84,7 @@ kernel void compute_vertices(
   Vertex v = inVertices[id];
   
   float height = heightTex.read(uint2(v.uv * float2(heightTex.get_width(),
-                                                    heightTex.get_height())))[0];
+                                                    heightTex.get_height()) - float2(0.5)))[0];
 
   float scale = 0.2;
   outVertices[id].position.y = v.position.y + height * scale;

@@ -7,8 +7,19 @@
 
 import MetalKit
 import MetalPerformanceShaders
+import QuartzCore
 
 class Renderer: MTKViewDelegate {
+  struct Stats {
+    var fps: Double
+    var frameTimeMs: Double
+    var meshResolution: UInt
+    var textureResolution: UInt
+    var drawableSize: CGSize
+    var deviceName: String
+    var shaderReloads: Int
+  }
+
   struct Camera {
     var position: SIMD3<Float>
     var forward: SIMD3<Float>
@@ -30,10 +41,15 @@ class Renderer: MTKViewDelegate {
   var scene_displaced: SceneContainer
   var pipeline: RenderingPipeline
   
-  var resolution: UInt
+  var meshResolution: UInt
+  var textureResolution: UInt
+  var shaderReloads: Int = 0
 
   var camera: Camera
   var cameraBuffer: MTLBuffer
+  var onStats: ((Stats) -> Void)?
+
+  private var lastFrameTimestamp: CFTimeInterval = CACurrentMediaTime()
 
   // Orbit parameters controlled from SwiftUI gestures
   private var orbitYaw: Double = 0.0
@@ -75,16 +91,17 @@ class Renderer: MTKViewDelegate {
     hash = 100
     description = "Renderer"
     
-    resolution = 1200
+    meshResolution = 1200
+    textureResolution = 1200
     let mesh = MeshFactory.makeExplicitPlane(allocator: MTKMeshBufferAllocator(device: device),
                                              device: device,
-                                             segmentsX: Int(resolution),
-                                             segmentsY: Int(resolution))
+                                             segmentsX: Int(meshResolution),
+                                             segmentsY: Int(meshResolution))
     scene_displaced = BasicScene(mesh: mesh)
     let textureDescriptor = MTLTextureDescriptor.texture2DDescriptor(
       pixelFormat: .r16Float,
-      width: Int(resolution),
-      height: Int(resolution),
+      width: Int(textureResolution),
+      height: Int(textureResolution),
       mipmapped: false)
     textureDescriptor.usage = [.shaderWrite, .shaderRead]
     displacementTexture = device.makeTexture(descriptor: textureDescriptor)!
@@ -107,12 +124,35 @@ class Renderer: MTKViewDelegate {
       commandBuffer.waitUntilCompleted()
     }
   }
+
+  private func emitStats(for view: MTKView, delta: CFTimeInterval) {
+    let fps = delta > 0 ? 1.0 / delta : 0.0
+    let stats = Stats(
+      fps: fps,
+      frameTimeMs: delta * 1000.0,
+      meshResolution: meshResolution,
+      textureResolution: textureResolution,
+      drawableSize: view.drawableSize,
+      deviceName: device.name,
+      shaderReloads: shaderReloads
+    )
+    DispatchQueue.main.async {
+      self.onStats?(stats)
+    }
+  }
   
   private func updateCameraBasis(lookAt target: SIMD3<Float>) {
     let worldUp = SIMD3<Float>(0, 1, 0)
-    let forward = simd_normalize(target - camera.position)
-    let right = simd_normalize(simd_cross(forward, worldUp))
+    var forward = simd_normalize(target - camera.position)
+    // If forward is almost parallel to worldUp, choose a different up to avoid degeneracy
+    let parallelThreshold: Float = 0.99
+    var upCandidate = worldUp
+    if abs(simd_dot(forward, worldUp)) > parallelThreshold {
+      upCandidate = SIMD3<Float>(0, 0, 1)
+    }
+    let right = simd_normalize(simd_cross(forward, upCandidate))
     let up = simd_normalize(simd_cross(right, forward))
+    forward = simd_normalize(forward)
     camera.forward = forward
     camera.right = right
     camera.up = up
@@ -124,7 +164,64 @@ class Renderer: MTKViewDelegate {
     memcpy(cameraBuffer.contents(), &camera, MemoryLayout<Camera>.stride)
   }
   
+  func updateResolutions(mesh newMeshResolution: UInt, texture newTextureResolution: UInt) {
+    let clampedMesh = max(UInt(8), min(UInt(4096), newMeshResolution))
+    let clampedTexture = max(UInt(8), min(UInt(4096), newTextureResolution))
+    let meshChanged = clampedMesh != meshResolution
+    let textureChanged = clampedTexture != textureResolution
+    guard meshChanged || textureChanged else { return }
+
+    semaphore.wait()
+
+    if meshChanged {
+      meshResolution = clampedMesh
+      let mesh = MeshFactory.makeExplicitPlane(
+        allocator: MTKMeshBufferAllocator(device: device),
+        device: device,
+        segmentsX: Int(clampedMesh),
+        segmentsY: Int(clampedMesh))
+      scene_displaced = BasicScene(mesh: mesh)
+      pipeline.reloadShaders(scene: scene_displaced)
+
+      vertexBufferOriginal = device.makeBuffer(length: scene_displaced.mesh.vertexBuffers[0].length,
+                                               options: .storageModePrivate)!
+      if let commandBuffer = pipeline.queue.makeCommandBuffer(),
+         let blitEncoder = commandBuffer.makeBlitCommandEncoder() {
+        blitEncoder.copy(from: scene_displaced.mesh.vertexBuffers[0].buffer, sourceOffset: 0,
+                         to: vertexBufferOriginal, destinationOffset: 0,
+                         size: scene_displaced.mesh.vertexBuffers[0].length)
+        blitEncoder.endEncoding()
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+      }
+    }
+
+    if textureChanged {
+      textureResolution = clampedTexture
+      let textureDescriptor = MTLTextureDescriptor.texture2DDescriptor(
+        pixelFormat: .r16Float,
+        width: Int(clampedTexture),
+        height: Int(clampedTexture),
+        mipmapped: false)
+      textureDescriptor.usage = [.shaderWrite, .shaderRead]
+      displacementTexture = device.makeTexture(descriptor: textureDescriptor)!
+    }
+
+    semaphore.signal()
+  }
+  
+  func reloadShaders() {
+    semaphore.wait()
+    pipeline.reloadShaders(scene: scene_displaced)
+    shaderReloads += 1
+    semaphore.signal()
+  }
+  
   func draw(in view: MTKView) {
+    let now = CACurrentMediaTime()
+    let delta = now - lastFrameTimestamp
+    lastFrameTimestamp = now
+
     semaphore.wait()
     guard let commandBuffer = pipeline.queue.makeCommandBuffer()
     else { fatalError() }
@@ -188,7 +285,7 @@ class Renderer: MTKViewDelegate {
     normalEncoder.setBytes(&vCount,
                              length: MemoryLayout<UInt32>.size,
                              index: 1)
-    var resolution_ = UInt32(resolution)
+    var resolution_ = UInt32(meshResolution)
     normalEncoder.setBytes(&resolution_,
                              length: MemoryLayout<UInt32>.size,
                              index: 2)
@@ -230,6 +327,7 @@ class Renderer: MTKViewDelegate {
     commandBuffer.present(drawable)
     commandBuffer.commit()
 
+    emitStats(for: view, delta: delta)
     
     commandBuffer.addCompletedHandler { cb in
       self.semaphore.signal()
@@ -279,22 +377,26 @@ class Renderer: MTKViewDelegate {
 
 extension Renderer: OrbitControllable {
     func setOrbit(yaw: Double, pitch: Double, distance: Double) {
-        // Cache values
+        // Cache values with safety clamps
         orbitYaw = yaw
-        orbitPitch = max(-1.4, min(1.4, pitch)) // clamp to avoid gimbal flip
-        orbitDistance = max(0.1, min(100.0, distance))
+        orbitPitch = max(-1.5, min(1.5, pitch))
+        orbitDistance = max(0.1, min(200.0, distance))
 
-        // Target the origin (0,0,0). Compute spherical coordinates to Cartesian.
+        // Target the origin (0,0,0). Compute spherical coordinates (yaw around Y, pitch around X).
         let target = SIMD3<Float>(0, 0, 0)
-        let x = Float(cos(orbitYaw) * cos(orbitPitch) * orbitDistance)
-        let y = Float(sin(orbitPitch) * orbitDistance)
-        let z = Float(sin(orbitYaw) * cos(orbitPitch) * orbitDistance)
-        camera.position = SIMD3<Float>(x, y, z)
+        let cosPitch = cos(orbitPitch)
+        let sinPitch = sin(orbitPitch)
+        let cosYaw = cos(orbitYaw)
+        let sinYaw = sin(orbitYaw)
+        // Yaw = 0 looks toward -Z for a typical right-handed view
+        let offset = SIMD3<Float>(
+          Float(cosPitch * sinYaw * orbitDistance),
+          Float(sinPitch * orbitDistance),
+          Float(-cosPitch * cosYaw * orbitDistance)
+        )
+        camera.position = target + offset
 
-        // Update basis vectors to look at target
         updateCameraBasis(lookAt: target)
-
-        // Write the updated camera into the GPU buffer
         memcpy(cameraBuffer.contents(), &camera, MemoryLayout<Camera>.stride)
     }
 }

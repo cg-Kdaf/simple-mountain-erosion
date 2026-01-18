@@ -46,12 +46,12 @@ struct Vertex {
 final class RenderingPipeline {
   let queue: MTLCommandQueue
   let device: MTLDevice
-  let rayGenPipelineState: MTLComputePipelineState
+  var rayGenPipelineState: MTLComputePipelineState
   var displacePipelineState: MTLComputePipelineState?
   var displaceTexturePipelineState: MTLComputePipelineState?
   var normalPipelineState: MTLComputePipelineState?
   let accelerationStructureBuilder: AccelerationStructureBuilder
-  private let library: MTLLibrary
+  private var library: MTLLibrary
   
   
   init(device: MTLDevice, view: MTKView, scene: SceneContainer) {
@@ -82,5 +82,20 @@ final class RenderingPipeline {
     displaceTexturePipelineState = try! device.makeComputePipelineState(function: displaceTextureFunction)
     guard let normalsFunction = library.makeFunction(name: "update_normals") else { fatalError() }
     normalPipelineState = try! device.makeComputePipelineState(function: normalsFunction)
+  }
+
+  /// Rebuilds all compute pipelines and acceleration structures using the latest default Metal library.
+  func reloadShaders(scene: SceneContainer) {
+    guard let newLibrary = device.makeDefaultLibrary() else { return }
+    library = newLibrary
+
+    let pipelineDescriptor = MTLComputePipelineDescriptor()
+    pipelineDescriptor.computeFunction = library.makeFunction(name: "compute_main")
+    let options: MTLPipelineOption = [.bindingInfo, .bufferTypeInfo]
+    let result = try! device.makeComputePipelineState(descriptor: pipelineDescriptor, options: options)
+    rayGenPipelineState = result.0
+
+    buildVertexPipeline(initial_buffer: scene.mesh.vertexBuffers.first!.buffer)
+    accelerationStructureBuilder.buildAccelerationStructure(for: [buildBLAS(device: device, scene: scene)])
   }
 }
