@@ -38,6 +38,7 @@ class Renderer: MTKViewDelegate {
   var superclass: AnyClass?
   var vertexBufferOriginal: MTLBuffer
   var displacementTexture: MTLTexture
+  var normalTexture: MTLTexture
   var scene_displaced: SceneContainer
   var pipeline: RenderingPipeline
   
@@ -105,6 +106,14 @@ class Renderer: MTKViewDelegate {
       mipmapped: false)
     textureDescriptor.usage = [.shaderWrite, .shaderRead]
     displacementTexture = device.makeTexture(descriptor: textureDescriptor)!
+
+    let normalDescriptor = MTLTextureDescriptor.texture2DDescriptor(
+      pixelFormat: .rgba16Float,
+      width: Int(textureResolution),
+      height: Int(textureResolution),
+      mipmapped: false)
+    normalDescriptor.usage = [.shaderWrite, .shaderRead]
+    normalTexture = device.makeTexture(descriptor: normalDescriptor)!
 
     pipeline = RenderingPipeline(device: self.device, view: metalKitView, scene: scene_displaced)
     pipeline.buildVertexPipeline(initial_buffer: (scene_displaced.mesh.vertexBuffers.first!.buffer))
@@ -205,6 +214,14 @@ class Renderer: MTKViewDelegate {
         mipmapped: false)
       textureDescriptor.usage = [.shaderWrite, .shaderRead]
       displacementTexture = device.makeTexture(descriptor: textureDescriptor)!
+
+      let normalDescriptor = MTLTextureDescriptor.texture2DDescriptor(
+        pixelFormat: .rgba16Float,
+        width: Int(clampedTexture),
+        height: Int(clampedTexture),
+        mipmapped: false)
+      normalDescriptor.usage = [.shaderWrite, .shaderRead]
+      normalTexture = device.makeTexture(descriptor: normalDescriptor)!
     }
 
     semaphore.signal()
@@ -235,6 +252,7 @@ class Renderer: MTKViewDelegate {
     displaceTextureEncoder.label = "Displace Texture Pass"
     displaceTextureEncoder.setComputePipelineState(pipeline.displaceTexturePipelineState!)
     displaceTextureEncoder.setTexture(displacementTexture, index: 0)
+    displaceTextureEncoder.setTexture(normalTexture, index: 1)
     displaceTextureEncoder.setBytes(&currentTime,
                                     length: MemoryLayout<Float>.size,
                                     index: 0)
@@ -272,33 +290,9 @@ class Renderer: MTKViewDelegate {
 
     displaceEncoder.dispatchThreadgroups(threadGroups, threadsPerThreadgroup: threadGroupSize)
     displaceEncoder.endEncoding()
-    
-    
-    guard let normalEncoder = commandBuffer.makeComputeCommandEncoder()
-    else { fatalError() }
-    
-    normalEncoder.label = "Vertex Normal refine Pass"
-    normalEncoder.setComputePipelineState(pipeline.normalPipelineState!)
 
-    // Bind Buffers according to your shader signature:
-    normalEncoder.setBuffer((scene_displaced.mesh.vertexBuffers.first!.buffer), offset: 0, index: 0)
-    normalEncoder.setBytes(&vCount,
-                             length: MemoryLayout<UInt32>.size,
-                             index: 1)
-    var resolution_ = UInt32(meshResolution)
-    normalEncoder.setBytes(&resolution_,
-                             length: MemoryLayout<UInt32>.size,
-                             index: 2)
-    normalEncoder.setBytes(&resolution_,
-                             length: MemoryLayout<UInt32>.size,
-                             index: 3)
-
-    normalEncoder.dispatchThreadgroups(threadGroups, threadsPerThreadgroup: threadGroupSize)
-    normalEncoder.endEncoding()
-    
     // ... [Step 2: Refit Acceleration Structure] ...
     pipeline.accelerationStructureBuilder.refit(commandBuffer: commandBuffer)
-    
     
     // ... [Step 3: Ray Tracing Encoder] ...
     guard let computeEncoder = commandBuffer.makeComputeCommandEncoder()
@@ -307,6 +301,7 @@ class Renderer: MTKViewDelegate {
     
     computeEncoder.setComputePipelineState(pipeline.rayGenPipelineState)
     computeEncoder.setTexture(view.currentDrawable?.texture, index: 0)
+    computeEncoder.setTexture(normalTexture, index: 1)
     computeEncoder.setBuffer(scene_displaced.mesh.vertexBuffers.first!.buffer, offset: 0, index: 1)
     computeEncoder.setBuffer(scene_displaced.mesh.submeshes.first!.indexBuffer.buffer, offset: 0, index: 2)
     computeEncoder.setBuffer(cameraBuffer, offset: 0, index: 3)

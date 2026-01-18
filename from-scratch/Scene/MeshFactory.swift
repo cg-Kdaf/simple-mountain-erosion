@@ -29,7 +29,6 @@ public enum MeshFactory {
   /// Simple interleaved vertex layout for explicit meshes
   struct Vertex {
     var position: SIMD3<Float>
-    var normal: SIMD3<Float>
     var uv: SIMD2<Float>
   }
   
@@ -55,7 +54,6 @@ public enum MeshFactory {
     let sy = max(1, segmentsY)
     let hw = width * 0.5
     let hh = height * 0.5
-    let n = SIMD3<Float>(0, 1, 0)
     let vertsPerRow = sx + 1
     let vertsPerCol = sy + 1
     var vertices: [Vertex] = []
@@ -67,7 +65,7 @@ public enum MeshFactory {
       for i in 0...sx {
         let u = Float(i) / Float(sx)
         let x = -hw + u * width
-        vertices.append(Vertex(position: SIMD3<Float>(x, 0, z), normal: n, uv: SIMD2<Float>(u, v)))
+        vertices.append(Vertex(position: SIMD3<Float>(x, 0, z), uv: SIMD2<Float>(u, v)))
       }
     }
 
@@ -103,11 +101,7 @@ public enum MeshFactory {
                                                         format: .float3,
                                                         offset: 0,
                                                         bufferIndex: 0)
-    vertexDescriptor.attributes[1] = MDLVertexAttribute(name: MDLVertexAttributeNormal,
-                                                        format: .float3,
-                                                        offset: MemoryLayout<SIMD3<Float>>.stride,
-                                                        bufferIndex: 0)
-    vertexDescriptor.attributes[2] = MDLVertexAttribute(name: MDLVertexAttributeTextureCoordinate,
+    vertexDescriptor.attributes[1] = MDLVertexAttribute(name: MDLVertexAttributeTextureCoordinate,
                                                         format: .float2,
                                                         offset: MemoryLayout<SIMD3<Float>>.stride * 2,
                                                         bufferIndex: 0)
@@ -126,11 +120,6 @@ public enum MeshFactory {
                           vertexCount: vertices.count,
                           descriptor: vertexDescriptor,
                           submeshes: [submesh])
-    
-    // Generate tangents if needed for normal mapping (optional)
-    mdlMesh.addOrthTanBasis(forTextureCoordinateAttributeNamed: MDLVertexAttributeTextureCoordinate,
-                            normalAttributeNamed: MDLVertexAttributeNormal,
-                            tangentAttributeNamed: MDLVertexAttributeTangent)
     
     // Finally, create the MTKMesh
     return try! MTKMesh(mesh: mdlMesh, device: device)

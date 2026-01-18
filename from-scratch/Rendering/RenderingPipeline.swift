@@ -38,7 +38,6 @@ func buildBLAS(device: MTLDevice, scene: SceneContainer) -> MTLAccelerationStruc
 
 struct Vertex {
   let position: SIMD3<Float>
-  let normal: SIMD3<Float>
   let uv: SIMD2<Float>
 }
 
@@ -49,7 +48,6 @@ final class RenderingPipeline {
   var rayGenPipelineState: MTLComputePipelineState
   var displacePipelineState: MTLComputePipelineState?
   var displaceTexturePipelineState: MTLComputePipelineState?
-  var normalPipelineState: MTLComputePipelineState?
   let accelerationStructureBuilder: AccelerationStructureBuilder
   private var library: MTLLibrary
   
@@ -80,8 +78,6 @@ final class RenderingPipeline {
     displacePipelineState = try! device.makeComputePipelineState(function: displaceFunction)
     guard let displaceTextureFunction = library.makeFunction(name: "compute_texture") else { fatalError() }
     displaceTexturePipelineState = try! device.makeComputePipelineState(function: displaceTextureFunction)
-    guard let normalsFunction = library.makeFunction(name: "update_normals") else { fatalError() }
-    normalPipelineState = try! device.makeComputePipelineState(function: normalsFunction)
   }
 
   /// Rebuilds all compute pipelines and acceleration structures using the latest default Metal library.
