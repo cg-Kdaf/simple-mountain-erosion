@@ -105,7 +105,6 @@ extension HeightField {
     encoder.endEncoding()
   }
   
-  
   private func blurHeightField(commandBuffer: MTLCommandBuffer) {
     guard let encoder = commandBuffer.makeComputeCommandEncoder()
     else { fatalError() }

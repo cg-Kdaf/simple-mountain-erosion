@@ -199,6 +199,8 @@ struct ContentView: View {
                       .buttonStyle(.borderedProminent)
                     Button("Reset Camera") { resetCamera() }
                       .buttonStyle(.bordered)
+                    Button("Reset HeightField") { renderer?.heightField.resetHeightField() }
+                      .buttonStyle(.bordered)
                     Button(autoTurn ? "Stop Auto" : "Auto Turn") {
                       autoTurn.toggle()
                       lastAutoTick = nil

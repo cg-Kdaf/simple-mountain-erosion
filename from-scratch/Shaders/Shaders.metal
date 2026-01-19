@@ -53,10 +53,18 @@ struct Vertex {
   float2 uv;
 };
 
-float getDisplacement(float2 uv) {
+float cosineStrangeDisplacement(float2 uv) {
     return (cos(uv.x * 10.0) + sin(uv.y * 10.0)) * 0.1 +
            (cos(uv.x * 100.0) + sin(uv.y * 100.0)) * 0.02 +
            (cos(uv.x * 300.0) + sin(uv.y * 300.0)) * 0.01;
+}
+
+float basicMountainForErosion(float2 uv) {
+    return exp(-10.0 * pow(length(uv - float2(0.5)), 2)) / 2.0;
+}
+
+float getDisplacement(float2 uv) {
+    return basicMountainForErosion(uv);
 }
 
 kernel void reset_texture(
@@ -94,7 +102,7 @@ kernel void recalculate_normals(
 
   float dhdx = (hR - hL) * 0.5;
   float dhdy = (hU - hD) * 0.5;
-  float scale = 100.0;
+  float scale = 300.0;
 
   float3 N = normalize(float3(-dhdx * scale, 1.0, -dhdy * scale));
   normalTex.write(float4(N, 1.0), gid);
