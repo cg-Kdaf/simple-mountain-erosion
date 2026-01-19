@@ -8,6 +8,7 @@
 import SwiftUI
 import Combine
 import MetalKit
+import AppKit
 
 @objc protocol OrbitControllable {
     @objc func setOrbit(yaw: Double, pitch: Double, distance: Double)
@@ -19,11 +20,21 @@ struct MetalRTView: NSViewRepresentable {
   var pitch: Double
   var distance: Double
   var onStats: (Renderer.Stats) -> Void = { _ in }
+  var onScroll: (Double) -> Void = { _ in }
 
   let makeRenderer: (MTKView) -> Renderer
 
   func makeNSView(context: Context) -> MTKView {
-    let mtkView = MTKView()
+    class OrbitMTKView: MTKView {
+      var onScroll: ((Double) -> Void)?
+      override func scrollWheel(with event: NSEvent) {
+        onScroll?(Double(event.scrollingDeltaY))
+        super.scrollWheel(with: event)
+      }
+    }
+
+    let mtkView = OrbitMTKView()
+    mtkView.onScroll = onScroll
     mtkView.device = MTLCreateSystemDefaultDevice()
     mtkView.colorPixelFormat = .bgra8Unorm
     mtkView.clearColor = MTLClearColor(red: 0.08, green: 0.08, blue: 0.1, alpha: 1)
@@ -82,7 +93,12 @@ struct ContentView: View {
             endPoint: .bottomTrailing)
           .ignoresSafeArea()
           
-          MetalRTView(renderer: $renderer, yaw: yaw, pitch: pitch, distance: distance, onStats: { stats = $0 }) { mtkView in
+          MetalRTView(renderer: $renderer, yaw: yaw, pitch: pitch, distance: distance, onStats: { stats = $0 }, onScroll: { delta in
+            let sensitivity = 0.01
+            distance -= delta * sensitivity
+            distance = max(0.1, min(200.0, distance))
+            renderer?.setOrbit(yaw: yaw, pitch: pitch, distance: distance)
+          }) { mtkView in
             Renderer(metalKitView: mtkView)!
           }
           .gesture(
