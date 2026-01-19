@@ -37,8 +37,7 @@ class Renderer: MTKViewDelegate {
   var hash: Int
   var superclass: AnyClass?
   var vertexBufferOriginal: MTLBuffer
-  var displacementTexture: MTLTexture
-  var normalTexture: MTLTexture
+  var heightField: HeightField
   var scene_displaced: SceneContainer
   var pipeline: RenderingPipeline
   
@@ -99,24 +98,10 @@ class Renderer: MTKViewDelegate {
                                              segmentsX: Int(meshResolution),
                                              segmentsY: Int(meshResolution))
     scene_displaced = BasicScene(mesh: mesh)
-    let textureDescriptor = MTLTextureDescriptor.texture2DDescriptor(
-      pixelFormat: .r16Float,
-      width: Int(textureResolution),
-      height: Int(textureResolution),
-      mipmapped: false)
-    textureDescriptor.usage = [.shaderWrite, .shaderRead]
-    displacementTexture = device.makeTexture(descriptor: textureDescriptor)!
-
-    let normalDescriptor = MTLTextureDescriptor.texture2DDescriptor(
-      pixelFormat: .rgba16Float,
-      width: Int(textureResolution),
-      height: Int(textureResolution),
-      mipmapped: false)
-    normalDescriptor.usage = [.shaderWrite, .shaderRead]
-    normalTexture = device.makeTexture(descriptor: normalDescriptor)!
+    heightField = HeightField(device: device, textureResolution: Int(textureResolution), library: device.makeDefaultLibrary())
 
     pipeline = RenderingPipeline(device: self.device, view: metalKitView, scene: scene_displaced)
-    pipeline.buildVertexPipeline(initial_buffer: (scene_displaced.mesh.vertexBuffers.first!.buffer))
+    pipeline.buildVertexPipeline(initial_buffer: (scene_displaced.mesh.vertexBuffers.first!.buffer), heightField: heightField)
     vertexBufferOriginal = device.makeBuffer(length: scene_displaced.mesh.vertexBuffers[0].length,
                                              options: .storageModePrivate)!
     do { // Copy the buffer to always have the original
@@ -190,7 +175,7 @@ class Renderer: MTKViewDelegate {
         segmentsX: Int(clampedMesh),
         segmentsY: Int(clampedMesh))
       scene_displaced = BasicScene(mesh: mesh)
-      pipeline.reloadShaders(scene: scene_displaced)
+      pipeline.reloadShaders(scene: scene_displaced, heightField: heightField)
 
       vertexBufferOriginal = device.makeBuffer(length: scene_displaced.mesh.vertexBuffers[0].length,
                                                options: .storageModePrivate)!
@@ -207,21 +192,7 @@ class Renderer: MTKViewDelegate {
 
     if textureChanged {
       textureResolution = clampedTexture
-      let textureDescriptor = MTLTextureDescriptor.texture2DDescriptor(
-        pixelFormat: .r16Float,
-        width: Int(clampedTexture),
-        height: Int(clampedTexture),
-        mipmapped: false)
-      textureDescriptor.usage = [.shaderWrite, .shaderRead]
-      displacementTexture = device.makeTexture(descriptor: textureDescriptor)!
-
-      let normalDescriptor = MTLTextureDescriptor.texture2DDescriptor(
-        pixelFormat: .rgba16Float,
-        width: Int(clampedTexture),
-        height: Int(clampedTexture),
-        mipmapped: false)
-      normalDescriptor.usage = [.shaderWrite, .shaderRead]
-      normalTexture = device.makeTexture(descriptor: normalDescriptor)!
+      heightField.resize(to: Int(clampedTexture))
     }
 
     semaphore.signal()
@@ -229,7 +200,7 @@ class Renderer: MTKViewDelegate {
   
   func reloadShaders() {
     semaphore.wait()
-    pipeline.reloadShaders(scene: scene_displaced)
+    pipeline.reloadShaders(scene: scene_displaced, heightField: heightField)
     shaderReloads += 1
     semaphore.signal()
   }
@@ -250,19 +221,19 @@ class Renderer: MTKViewDelegate {
     else { fatalError() }
     
     displaceTextureEncoder.label = "Displace Texture Pass"
-    displaceTextureEncoder.setComputePipelineState(pipeline.displaceTexturePipelineState!)
-    displaceTextureEncoder.setTexture(displacementTexture, index: 0)
-    displaceTextureEncoder.setTexture(normalTexture, index: 1)
+    displaceTextureEncoder.setComputePipelineState(heightField.displaceTexturePipelineState!)
+    displaceTextureEncoder.setTexture(heightField.displacementTexture, index: 0)
+    displaceTextureEncoder.setTexture(heightField.normalTexture, index: 1)
     displaceTextureEncoder.setBytes(&currentTime,
                                     length: MemoryLayout<Float>.size,
                                     index: 0)
 
-    let w_texture = pipeline.displaceTexturePipelineState!.threadExecutionWidth
-    let h_texture = pipeline.displaceTexturePipelineState!.maxTotalThreadsPerThreadgroup / w_texture
+    let w_texture = heightField.displaceTexturePipelineState!.threadExecutionWidth
+    let h_texture = heightField.displaceTexturePipelineState!.maxTotalThreadsPerThreadgroup / w_texture
     let threadsPerThreadgroup = MTLSizeMake(w_texture, h_texture, 1)
-    let threadsPerGrid = MTLSize(width: (displacementTexture.width + w_texture - 1) / w_texture,
-                                 height: (displacementTexture.height + h_texture - 1) / h_texture,
-                                 depth: 1)
+    let threadsPerGrid = MTLSize(width: (heightField.displacementTexture.width + w_texture - 1) / w_texture,
+                   height: (heightField.displacementTexture.height + h_texture - 1) / h_texture,
+                   depth: 1)
 
     displaceTextureEncoder.dispatchThreadgroups(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
     displaceTextureEncoder.endEncoding()
@@ -272,7 +243,7 @@ class Renderer: MTKViewDelegate {
     else { fatalError() }
     
     displaceEncoder.label = "Vertex Displacement Pass"
-    displaceEncoder.setComputePipelineState(pipeline.displacePipelineState!)
+    displaceEncoder.setComputePipelineState(heightField.displacePipelineState!)
 
     // Bind Buffers according to your shader signature:
     displaceEncoder.setBuffer(vertexBufferOriginal, offset: 0, index: 0)
@@ -281,7 +252,7 @@ class Renderer: MTKViewDelegate {
     displaceEncoder.setBytes(&vCount,
                              length: MemoryLayout<UInt32>.size,
                              index: 2)
-    displaceEncoder.setTexture(displacementTexture, index: 0)
+    displaceEncoder.setTexture(heightField.displacementTexture, index: 0)
     
     // Calculate Dispatch Size (1D Grid for vertices)
     // Unlike your ray tracer which uses W x H, this uses a linear array of vertices.
@@ -301,7 +272,7 @@ class Renderer: MTKViewDelegate {
     
     computeEncoder.setComputePipelineState(pipeline.rayGenPipelineState)
     computeEncoder.setTexture(view.currentDrawable?.texture, index: 0)
-    computeEncoder.setTexture(normalTexture, index: 1)
+    computeEncoder.setTexture(heightField.normalTexture, index: 1)
     computeEncoder.setBuffer(scene_displaced.mesh.vertexBuffers.first!.buffer, offset: 0, index: 1)
     computeEncoder.setBuffer(scene_displaced.mesh.submeshes.first!.indexBuffer.buffer, offset: 0, index: 2)
     computeEncoder.setBuffer(cameraBuffer, offset: 0, index: 3)

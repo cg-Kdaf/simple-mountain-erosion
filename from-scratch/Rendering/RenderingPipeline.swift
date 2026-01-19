@@ -46,8 +46,6 @@ final class RenderingPipeline {
   let queue: MTLCommandQueue
   let device: MTLDevice
   var rayGenPipelineState: MTLComputePipelineState
-  var displacePipelineState: MTLComputePipelineState?
-  var displaceTexturePipelineState: MTLComputePipelineState?
   let accelerationStructureBuilder: AccelerationStructureBuilder
   private var library: MTLLibrary
   
@@ -72,16 +70,17 @@ final class RenderingPipeline {
     accelerationStructureBuilder.buildAccelerationStructure(for: [buildBLAS(device: device, scene: scene)])
   }
   
-  func buildVertexPipeline(initial_buffer: MTLBuffer) {
-    // Create the vertex displacement pipeline
-    guard let displaceFunction = library.makeFunction(name: "compute_vertices") else { fatalError() }
-    displacePipelineState = try! device.makeComputePipelineState(function: displaceFunction)
-    guard let displaceTextureFunction = library.makeFunction(name: "compute_texture") else { fatalError() }
-    displaceTexturePipelineState = try! device.makeComputePipelineState(function: displaceTextureFunction)
+  /// Build vertex/texture pipelines and optionally register them on a `HeightField`.
+  func buildVertexPipeline(initial_buffer: MTLBuffer, heightField: AnyObject? = nil) {
+    // If a HeightField is provided, let it create the displacement/texture pipelines
+    // The HeightField will use the pipeline library to build its compute pipelines.
+    if let hf = heightField as? HeightField {
+      hf.buildPipelines(library: library)
+    }
   }
 
   /// Rebuilds all compute pipelines and acceleration structures using the latest default Metal library.
-  func reloadShaders(scene: SceneContainer) {
+  func reloadShaders(scene: SceneContainer, heightField: AnyObject? = nil) {
     guard let newLibrary = device.makeDefaultLibrary() else { return }
     library = newLibrary
 
@@ -91,7 +90,7 @@ final class RenderingPipeline {
     let result = try! device.makeComputePipelineState(descriptor: pipelineDescriptor, options: options)
     rayGenPipelineState = result.0
 
-    buildVertexPipeline(initial_buffer: scene.mesh.vertexBuffers.first!.buffer)
+    buildVertexPipeline(initial_buffer: scene.mesh.vertexBuffers.first!.buffer, heightField: heightField)
     accelerationStructureBuilder.buildAccelerationStructure(for: [buildBLAS(device: device, scene: scene)])
   }
 }
