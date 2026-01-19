@@ -46,6 +46,7 @@ final class RenderingPipeline {
   let queue: MTLCommandQueue
   let device: MTLDevice
   var rayGenPipelineState: MTLComputePipelineState
+  var displacePipelineState: MTLComputePipelineState?
   let accelerationStructureBuilder: AccelerationStructureBuilder
   private var library: MTLLibrary
   
@@ -76,6 +77,9 @@ final class RenderingPipeline {
     // The HeightField will use the pipeline library to build its compute pipelines.
     if let hf = heightField as? HeightField {
       hf.buildPipelines(library: library)
+    }
+    if let displaceFn = library.makeFunction(name: "compute_vertices") {
+      displacePipelineState = try? device.makeComputePipelineState(function: displaceFn)
     }
   }
 

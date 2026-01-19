@@ -214,36 +214,17 @@ class Renderer: MTKViewDelegate {
     guard let commandBuffer = pipeline.queue.makeCommandBuffer()
     else { fatalError() }
 
-    var currentTime: Float = Float(dateStart.timeIntervalSinceNow)
+    let currentTime: Float = Float(dateStart.timeIntervalSinceNow)
     
     // --- STEP 0: Displacement texture update ---
-    guard let displaceTextureEncoder = commandBuffer.makeComputeCommandEncoder()
-    else { fatalError() }
-    
-    displaceTextureEncoder.label = "Displace Texture Pass"
-    displaceTextureEncoder.setComputePipelineState(heightField.displaceTexturePipelineState!)
-    displaceTextureEncoder.setTexture(heightField.displacementTexture, index: 0)
-    displaceTextureEncoder.setTexture(heightField.normalTexture, index: 1)
-    displaceTextureEncoder.setBytes(&currentTime,
-                                    length: MemoryLayout<Float>.size,
-                                    index: 0)
-
-    let w_texture = heightField.displaceTexturePipelineState!.threadExecutionWidth
-    let h_texture = heightField.displaceTexturePipelineState!.maxTotalThreadsPerThreadgroup / w_texture
-    let threadsPerThreadgroup = MTLSizeMake(w_texture, h_texture, 1)
-    let threadsPerGrid = MTLSize(width: (heightField.displacementTexture.width + w_texture - 1) / w_texture,
-                   height: (heightField.displacementTexture.height + h_texture - 1) / h_texture,
-                   depth: 1)
-
-    displaceTextureEncoder.dispatchThreadgroups(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
-    displaceTextureEncoder.endEncoding()
+    heightField.executeStep(commandBuffer: commandBuffer, currentTime: currentTime)
     
     // --- STEP 1: Displacement Encoder ---
     guard let displaceEncoder = commandBuffer.makeComputeCommandEncoder()
     else { fatalError() }
     
     displaceEncoder.label = "Vertex Displacement Pass"
-    displaceEncoder.setComputePipelineState(heightField.displacePipelineState!)
+    displaceEncoder.setComputePipelineState(pipeline.displacePipelineState!)
 
     // Bind Buffers according to your shader signature:
     displaceEncoder.setBuffer(vertexBufferOriginal, offset: 0, index: 0)
