@@ -76,7 +76,7 @@ final class RenderingPipeline {
     // If a HeightField is provided, let it create the displacement/texture pipelines
     // The HeightField will use the pipeline library to build its compute pipelines.
     if let hf = heightField as? HeightField {
-      hf.buildPipelines(library: library)
+      try! hf.rebuildPipeline(with: library)
     }
     if let displaceFn = library.makeFunction(name: "compute_vertices") {
       displacePipelineState = try? device.makeComputePipelineState(function: displaceFn)

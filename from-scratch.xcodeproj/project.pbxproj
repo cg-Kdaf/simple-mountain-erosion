@@ -10,9 +10,22 @@
 		3BFAD7652EF7E0F2005629FF /* from-scratch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "from-scratch.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		3BE7D4052F1F6AF100A07CE5 /* Exceptions for "from-scratch" folder in "from-scratch" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				"2008-sca-erosiom-fin.pdf",
+			);
+			target = 3BFAD7642EF7E0F2005629FF /* from-scratch */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		3BFAD7672EF7E0F2005629FF /* from-scratch */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				3BE7D4052F1F6AF100A07CE5 /* Exceptions for "from-scratch" folder in "from-scratch" target */,
+			);
 			path = "from-scratch";
 			sourceTree = "<group>";
 		};

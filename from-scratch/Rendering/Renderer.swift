@@ -233,7 +233,7 @@ class Renderer: MTKViewDelegate {
     displaceEncoder.setBytes(&vCount,
                              length: MemoryLayout<UInt32>.size,
                              index: 2)
-    displaceEncoder.setTexture(heightField.displacementTexture, index: 0)
+    displaceEncoder.setTexture(heightField.textures.displacement, index: 0)
     
     // Calculate Dispatch Size (1D Grid for vertices)
     // Unlike your ray tracer which uses W x H, this uses a linear array of vertices.
@@ -253,7 +253,7 @@ class Renderer: MTKViewDelegate {
     
     computeEncoder.setComputePipelineState(pipeline.rayGenPipelineState)
     computeEncoder.setTexture(view.currentDrawable?.texture, index: 0)
-    computeEncoder.setTexture(heightField.normalTexture, index: 1)
+    computeEncoder.setTexture(heightField.textures.normal, index: 1)
     computeEncoder.setBuffer(scene_displaced.mesh.vertexBuffers.first!.buffer, offset: 0, index: 1)
     computeEncoder.setBuffer(scene_displaced.mesh.submeshes.first!.indexBuffer.buffer, offset: 0, index: 2)
     computeEncoder.setBuffer(cameraBuffer, offset: 0, index: 3)
