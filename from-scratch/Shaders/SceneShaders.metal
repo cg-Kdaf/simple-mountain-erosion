@@ -6,6 +6,7 @@
 //
 
 #include <metal_stdlib>
+#include "CommonShaders.h"
 using namespace metal;
 using namespace raytracing;
 
@@ -64,14 +65,15 @@ kernel void compute_vertices(
   
   Vertex v = inVertices[id];
   
-  float height = heightTex.read(uint2(v.uv * float2(heightTex.get_width(),
-                                                    heightTex.get_height()) - float2(0.5)))[0];
+  float4 terrain = heightTex.read(uint2(v.uv * float2(heightTex.get_width(),
+                                                    heightTex.get_height()) - float2(0.5)));
 
-  outVertices[id].position.y = v.position.y + height;
+  outVertices[id].position.y = v.position.y + getWholeHeight(terrain);
 }
 
 kernel void compute_main(texture2d<float, access::write> outTexture [[texture(0)]],
                          texture2d<float, access::read> normalTex [[texture(1)]],
+                         texture2d<float, access::read> colorTex [[texture(2)]],
                          uint2 gid [[thread_position_in_grid]],
                          metal::raytracing::primitive_acceleration_structure accelerationStructure [[buffer(0)]],
                          device const Vertex* vertices [[buffer(1)]],
@@ -122,7 +124,9 @@ kernel void compute_main(texture2d<float, access::write> outTexture [[texture(0)
     float ndotl = max(dot(N, L), 0.0);
 
     // Simple albedo to make it visible
+    float4 colored = colorTex.read(sampleCoord);
     float3 albedo = float3(0.75, 0.65, 0.55);
+    albedo = float3(0.0, 0.0, 1.0) * colored.z + (1.0 - colored.z) * albedo;
 
     // Optional: face orientation fix (avoid backface darkening if desired)
     // if (dot(N, V) < 0.0) N = -N;
@@ -132,7 +136,7 @@ kernel void compute_main(texture2d<float, access::write> outTexture [[texture(0)
     // Optional: small rim light for nicer look
     float rim = pow(clamp(1.0 - max(dot(N, V), 0.0), 0.0, 1.0), 2.0) * 0.05;
     shaded += rim;
-
+    
     color = clamp(shaded, 0.0, 1.0);
   }
   

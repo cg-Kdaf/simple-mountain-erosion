@@ -1,7 +1,18 @@
 import MetalKit
 
 struct HeightFieldTextures {
-  var displacement: MTLTexture
+  // RGBA16 st: R(bedrock(b)) G(Regolith(r)) B(Water(d)) A(Suspended sediments(s))
+  var terrain: MTLTexture
+  var terrainTemp: MTLTexture
+  
+  // RGBA16 st: R(left) G(right) B(top) A(bottom)
+  var flux: MTLTexture
+  var fluxTemp: MTLTexture
+  
+  // RG16 st: R(velocity X) G(velocity Y)
+  var velocity: MTLTexture
+  
+  // RGB16 classical normal texture
   var normal: MTLTexture
 }
 
@@ -10,6 +21,13 @@ struct HeightFieldPipelineStates {
   var reset: MTLComputePipelineState
   var recalculateNormals: MTLComputePipelineState
   var progressiveBlur: MTLComputePipelineState
+  
+  var rain: MTLComputePipelineState
+  var flux: MTLComputePipelineState
+  var velocity: MTLComputePipelineState
+  var deposition: MTLComputePipelineState
+  var advection: MTLComputePipelineState
+  var evaporation: MTLComputePipelineState
 }
 
 enum HeightFieldError: Error {
@@ -48,14 +66,32 @@ final class HeightField {
   }
   
   static func createTextures(device: MTLDevice, resolution: Int) -> HeightFieldTextures {
-    let texDesc = MTLTextureDescriptor.texture2DDescriptor(
-      pixelFormat: .r16Float,
+    let terrainDesc = MTLTextureDescriptor.texture2DDescriptor(
+      pixelFormat: .rgba16Float,
       width: resolution,
       height: resolution,
       mipmapped: false)
-    texDesc.usage = [.shaderRead, .shaderWrite]
-    let displacement = device.makeTexture(descriptor: texDesc)!
-
+    terrainDesc.usage = [.shaderRead, .shaderWrite]
+    let terrainA = device.makeTexture(descriptor: terrainDesc)!
+    let terrainB = device.makeTexture(descriptor: terrainDesc)!
+    
+    let fluxDesc = MTLTextureDescriptor.texture2DDescriptor(
+      pixelFormat: .rgba16Float,
+      width: resolution,
+      height: resolution,
+      mipmapped: false)
+    fluxDesc.usage = [.shaderRead, .shaderWrite]
+    let fluxA = device.makeTexture(descriptor: fluxDesc)!
+    let fluxB = device.makeTexture(descriptor: fluxDesc)!
+    
+    let velocityDesc = MTLTextureDescriptor.texture2DDescriptor(
+      pixelFormat: .rg16Float,
+      width: resolution,
+      height: resolution,
+      mipmapped: false)
+    velocityDesc.usage = [.shaderRead, .shaderWrite]
+    let velocity = device.makeTexture(descriptor: velocityDesc)!
+    
     let normalDesc = MTLTextureDescriptor.texture2DDescriptor(
       pixelFormat: .rgba16Float,
       width: resolution,
@@ -63,7 +99,13 @@ final class HeightField {
       mipmapped: false)
     normalDesc.usage = [.shaderRead, .shaderWrite]
     let normal = device.makeTexture(descriptor: normalDesc)!
-    return HeightFieldTextures(displacement: displacement, normal: normal)
+    return HeightFieldTextures(
+      terrain: terrainA,
+      terrainTemp: terrainB,
+      flux: fluxA,
+      fluxTemp: fluxB,
+      velocity: velocity,
+      normal: normal)
   }
 
   static private func buildPipelines(device: MTLDevice, library: MTLLibrary) throws -> HeightFieldPipelineStates {
@@ -71,11 +113,24 @@ final class HeightField {
     let recalculateNormals = try HeightField.loadShader(device: device, library: library, shader_name: "recalculate_normals")
     let reset = try HeightField.loadShader(device: device, library: library, shader_name: "reset_heightmap")
     let progressiveBlur = try HeightField.loadShader(device: device, library: library, shader_name: "progressive_blur")
+    
+    let add_rain = try HeightField.loadShader(device: device, library: library, shader_name: "add_rain")
+    let calc_flux = try HeightField.loadShader(device: device, library: library, shader_name: "calc_flux")
+    let water_velocity = try HeightField.loadShader(device: device, library: library, shader_name: "water_velocity")
+    let erosion_deposition = try HeightField.loadShader(device: device, library: library, shader_name: "erosion_deposition")
+    let sediment_transport = try HeightField.loadShader(device: device, library: library, shader_name: "sediment_transport")
+    let evaporation = try HeightField.loadShader(device: device, library: library, shader_name: "evaporation")
     return HeightFieldPipelineStates(
       displace: displace,
       reset: reset,
       recalculateNormals: recalculateNormals,
-      progressiveBlur: progressiveBlur)
+      progressiveBlur: progressiveBlur,
+      rain: add_rain,
+      flux: calc_flux,
+      velocity: water_velocity,
+      deposition: erosion_deposition,
+      advection: sediment_transport,
+      evaporation: evaporation)
   }
   
   func rebuildPipeline(with library: MTLLibrary) throws {
@@ -112,7 +167,7 @@ extension HeightField {
   
     encoder.label = "Reset Height Field Pass"
     encoder.setComputePipelineState(pipelineStates.reset)
-    encoder.setTexture(textures.displacement, index: 0)
+    encoder.setTexture(textures.terrain, index: 0)
 
     let (threadsPerGrid, threadsPerThreadgroup) = createDisplatchGrid(pipelineState: pipelineStates.reset)
     
@@ -126,7 +181,7 @@ extension HeightField {
   
     encoder.label = "Progressive Blur Height Field Pass"
     encoder.setComputePipelineState(pipelineStates.progressiveBlur)
-    encoder.setTexture(textures.displacement, index: 0)
+    encoder.setTexture(textures.terrain, index: 0)
 
     let (threadsPerGrid, threadsPerThreadgroup) = createDisplatchGrid(pipelineState: pipelineStates.progressiveBlur)
     
@@ -141,7 +196,7 @@ extension HeightField {
     
     encoder.label = "Live animation Texture Pass"
     encoder.setComputePipelineState(pipelineStates.displace)
-    encoder.setTexture(textures.displacement, index: 0)
+    encoder.setTexture(textures.terrain, index: 0)
     encoder.setBytes(&currentTime,
                      length: MemoryLayout<Float>.size,
                      index: 0)
@@ -158,7 +213,7 @@ extension HeightField {
     
     encoder.label = "Normal Texture Recalculation Pass"
     encoder.setComputePipelineState(pipelineStates.recalculateNormals)
-    encoder.setTexture(textures.displacement, index: 0)
+    encoder.setTexture(textures.terrain, index: 0)
     encoder.setTexture(textures.normal, index: 1)
 
     let (threadsPerGrid, threadsPerThreadgroup) =
@@ -168,12 +223,78 @@ extension HeightField {
     encoder.endEncoding()
   }
   
+  private func erosionStep(commandBuffer: MTLCommandBuffer) {
+    guard let encoder = commandBuffer.makeComputeCommandEncoder()
+    else { fatalError() }
+    
+    encoder.label = "Erosion Simulation Pass"
+    
+    // 1. Add Rain
+    encoder.setComputePipelineState(pipelineStates.rain)
+    encoder.setTexture(textures.terrain, index: 0)
+    encoder.setTexture(textures.terrainTemp, index: 1)
+    let (threadsPerGrid1, threadsPerThreadgroup1) = createDisplatchGrid(pipelineState: pipelineStates.rain)
+    encoder.dispatchThreadgroups(threadsPerGrid1, threadsPerThreadgroup: threadsPerThreadgroup1)
+    
+    // 2. Calculate Flux
+    encoder.setComputePipelineState(pipelineStates.flux)
+    encoder.setTexture(textures.terrainTemp, index: 0)
+    encoder.setTexture(textures.flux, index: 1)
+    encoder.setTexture(textures.fluxTemp, index: 2)
+    let (threadsPerGrid2, threadsPerThreadgroup2) = createDisplatchGrid(pipelineState: pipelineStates.flux)
+    encoder.dispatchThreadgroups(threadsPerGrid2, threadsPerThreadgroup: threadsPerThreadgroup2)
+    
+    // 3. Update Water and Calculate Velocity
+    encoder.setComputePipelineState(pipelineStates.velocity)
+    encoder.setTexture(textures.terrainTemp, index: 0)
+    encoder.setTexture(textures.terrain, index: 1)
+    encoder.setTexture(textures.fluxTemp, index: 2)
+    encoder.setTexture(textures.velocity, index: 3)
+    let (threadsPerGrid3, threadsPerThreadgroup3) = createDisplatchGrid(pipelineState: pipelineStates.velocity)
+    encoder.dispatchThreadgroups(threadsPerGrid3, threadsPerThreadgroup: threadsPerThreadgroup3)
+
+    // 4. Erosion and Deposition
+    encoder.setComputePipelineState(pipelineStates.deposition)
+    encoder.setTexture(textures.terrain, index: 0)
+    encoder.setTexture(textures.terrainTemp, index: 1)
+    encoder.setTexture(textures.velocity, index: 2)
+    let (threadsPerGrid4, threadsPerThreadgroup4) = createDisplatchGrid(pipelineState: pipelineStates.deposition)
+    encoder.dispatchThreadgroups(threadsPerGrid4, threadsPerThreadgroup: threadsPerThreadgroup4)
+    
+    // 5. Sediment Advection
+    encoder.setComputePipelineState(pipelineStates.advection)
+    encoder.setTexture(textures.terrainTemp, index: 0)
+    encoder.setTexture(textures.terrain, index: 1)
+    encoder.setTexture(textures.velocity, index: 2)
+    let (threadsPerGrid5, threadsPerThreadgroup5) = createDisplatchGrid(pipelineState: pipelineStates.advection)
+    encoder.dispatchThreadgroups(threadsPerGrid5, threadsPerThreadgroup: threadsPerThreadgroup5)
+    
+    // 6. Evaporation
+    encoder.setComputePipelineState(pipelineStates.evaporation)
+    encoder.setTexture(textures.terrain, index: 0)
+    encoder.setTexture(textures.terrainTemp, index: 1)
+    let (threadsPerGrid6, threadsPerThreadgroup6) = createDisplatchGrid(pipelineState: pipelineStates.evaporation)
+    encoder.dispatchThreadgroups(threadsPerGrid6, threadsPerThreadgroup: threadsPerThreadgroup6)
+    
+    let terrain_swap = textures.terrain
+    textures.terrain = textures.terrainTemp
+    textures.terrainTemp = terrain_swap
+    
+    encoder.endEncoding()
+  }
+  
   func executeStep(commandBuffer: MTLCommandBuffer, currentTime: Float) {
     if (resetField) {
       resetHeightField(commandBuffer: commandBuffer)
       resetField = false
     }
-    blurHeightField(commandBuffer: commandBuffer)
+//    blurHeightField(commandBuffer: commandBuffer)
+    erosionStep(commandBuffer: commandBuffer)
+    erosionStep(commandBuffer: commandBuffer)
+    erosionStep(commandBuffer: commandBuffer)
+    erosionStep(commandBuffer: commandBuffer)
+    erosionStep(commandBuffer: commandBuffer)
+    erosionStep(commandBuffer: commandBuffer)
     recalculateNormals(commandBuffer: commandBuffer)
   }
 }

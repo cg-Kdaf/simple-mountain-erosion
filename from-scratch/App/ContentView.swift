@@ -75,8 +75,8 @@ struct ContentView: View {
     @State private var lastDragPosition: CGPoint = .zero
     @State private var isDragging: Bool = false
     @State private var renderer: Renderer?
-    @State private var meshResolution: Double = 1200
-    @State private var textureResolution: Double = 1200
+    @State private var meshResolution: Double = 512
+    @State private var textureResolution: Double = 512
     @State private var stats: Renderer.Stats?
     @State private var showControls: Bool = true
     @State private var showHUD: Bool = true
@@ -99,7 +99,9 @@ struct ContentView: View {
             distance = max(0.1, min(200.0, distance))
             renderer?.setOrbit(yaw: yaw, pitch: pitch, distance: distance)
           }) { mtkView in
-            Renderer(metalKitView: mtkView)!
+            Renderer(metalKitView: mtkView,
+                     meshResolution: UInt(meshResolution),
+                     textureResolution: UInt(textureResolution))!
           }
           .gesture(
             DragGesture(minimumDistance: 0)
