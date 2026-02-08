@@ -1,7 +1,8 @@
 import MetalKit
+import SwiftUI
 
 struct HeightFieldTextures {
-  // RGBA16 st: R(bedrock(b)) G(Regolith(r)) B(Water(d)) A(Suspended sediments(s))
+  // RGBA32 st: R(bedrock(b)) G(Regolith(r)) B(Water(d)) A(Suspended sediments(s))
   var terrain: MTLTexture
   var terrainTemp: MTLTexture
   
@@ -40,8 +41,14 @@ final class HeightField {
   private var pipelineStates: HeightFieldPipelineStates
   private var resetField: Bool = true
   private(set) var textureResolution: Int
+  
+  private var simulationUniforms: HeightMapUniforms
+  private var simulationUniformsBuffer: MTLBuffer
 
-  init(device: MTLDevice, textureResolution: Int, library: MTLLibrary? = nil) {
+  init(device: MTLDevice,
+       textureResolution: Int,
+       library: MTLLibrary? = nil,
+       simulationUniforms: HeightMapUniforms) {
     self.device = device
     self.textureResolution = textureResolution
     textures = HeightField.createTextures(device: device, resolution: textureResolution)
@@ -51,6 +58,16 @@ final class HeightField {
     } else {
       let defaultLib = device.makeDefaultLibrary()!
       pipelineStates = try! HeightField.buildPipelines(device: device, library: defaultLib)
+    }
+    
+    self.simulationUniforms = simulationUniforms
+    simulationUniformsBuffer = device.makeBuffer(length: MemoryLayout<HeightMapUniforms>.stride, options: .storageModeShared)!
+    updateErosionUniformBuffer(simulationUniforms)
+  }
+  
+  func updateErosionUniformBuffer(_ data: HeightMapUniforms) {
+    let _ = withUnsafeBytes(of: data) { bytes in
+      memcpy(simulationUniformsBuffer.contents(), bytes.baseAddress!, MemoryLayout<HeightMapUniforms>.stride)
     }
   }
   
@@ -67,7 +84,7 @@ final class HeightField {
   
   static func createTextures(device: MTLDevice, resolution: Int) -> HeightFieldTextures {
     let terrainDesc = MTLTextureDescriptor.texture2DDescriptor(
-      pixelFormat: .rgba16Float,
+      pixelFormat: .rgba32Float,
       width: resolution,
       height: resolution,
       mipmapped: false)
@@ -215,6 +232,7 @@ extension HeightField {
     encoder.setComputePipelineState(pipelineStates.recalculateNormals)
     encoder.setTexture(textures.terrain, index: 0)
     encoder.setTexture(textures.normal, index: 1)
+    encoder.setBuffer(simulationUniformsBuffer, offset: 0, index: 0)
 
     let (threadsPerGrid, threadsPerThreadgroup) =
       createDisplatchGrid(pipelineState: pipelineStates.recalculateNormals)
@@ -227,12 +245,13 @@ extension HeightField {
     guard let encoder = commandBuffer.makeComputeCommandEncoder()
     else { fatalError() }
     
-    encoder.label = "Erosion Simulation Pass"
+    encoder.label = "Erosion Simulation Passes"
     
     // 1. Add Rain
     encoder.setComputePipelineState(pipelineStates.rain)
     encoder.setTexture(textures.terrain, index: 0)
     encoder.setTexture(textures.terrainTemp, index: 1)
+    encoder.setBuffer(simulationUniformsBuffer, offset: 0, index: 0)
     let (threadsPerGrid1, threadsPerThreadgroup1) = createDisplatchGrid(pipelineState: pipelineStates.rain)
     encoder.dispatchThreadgroups(threadsPerGrid1, threadsPerThreadgroup: threadsPerThreadgroup1)
     
@@ -241,6 +260,7 @@ extension HeightField {
     encoder.setTexture(textures.terrainTemp, index: 0)
     encoder.setTexture(textures.flux, index: 1)
     encoder.setTexture(textures.fluxTemp, index: 2)
+    encoder.setBuffer(simulationUniformsBuffer, offset: 0, index: 0)
     let (threadsPerGrid2, threadsPerThreadgroup2) = createDisplatchGrid(pipelineState: pipelineStates.flux)
     encoder.dispatchThreadgroups(threadsPerGrid2, threadsPerThreadgroup: threadsPerThreadgroup2)
     
@@ -250,6 +270,7 @@ extension HeightField {
     encoder.setTexture(textures.terrain, index: 1)
     encoder.setTexture(textures.fluxTemp, index: 2)
     encoder.setTexture(textures.velocity, index: 3)
+    encoder.setBuffer(simulationUniformsBuffer, offset: 0, index: 0)
     let (threadsPerGrid3, threadsPerThreadgroup3) = createDisplatchGrid(pipelineState: pipelineStates.velocity)
     encoder.dispatchThreadgroups(threadsPerGrid3, threadsPerThreadgroup: threadsPerThreadgroup3)
 
@@ -258,6 +279,7 @@ extension HeightField {
     encoder.setTexture(textures.terrain, index: 0)
     encoder.setTexture(textures.terrainTemp, index: 1)
     encoder.setTexture(textures.velocity, index: 2)
+    encoder.setBuffer(simulationUniformsBuffer, offset: 0, index: 0)
     let (threadsPerGrid4, threadsPerThreadgroup4) = createDisplatchGrid(pipelineState: pipelineStates.deposition)
     encoder.dispatchThreadgroups(threadsPerGrid4, threadsPerThreadgroup: threadsPerThreadgroup4)
     
@@ -266,6 +288,7 @@ extension HeightField {
     encoder.setTexture(textures.terrainTemp, index: 0)
     encoder.setTexture(textures.terrain, index: 1)
     encoder.setTexture(textures.velocity, index: 2)
+    encoder.setBuffer(simulationUniformsBuffer, offset: 0, index: 0)
     let (threadsPerGrid5, threadsPerThreadgroup5) = createDisplatchGrid(pipelineState: pipelineStates.advection)
     encoder.dispatchThreadgroups(threadsPerGrid5, threadsPerThreadgroup: threadsPerThreadgroup5)
     
@@ -273,12 +296,17 @@ extension HeightField {
     encoder.setComputePipelineState(pipelineStates.evaporation)
     encoder.setTexture(textures.terrain, index: 0)
     encoder.setTexture(textures.terrainTemp, index: 1)
+    encoder.setBuffer(simulationUniformsBuffer, offset: 0, index: 0)
     let (threadsPerGrid6, threadsPerThreadgroup6) = createDisplatchGrid(pipelineState: pipelineStates.evaporation)
     encoder.dispatchThreadgroups(threadsPerGrid6, threadsPerThreadgroup: threadsPerThreadgroup6)
     
     let terrain_swap = textures.terrain
     textures.terrain = textures.terrainTemp
     textures.terrainTemp = terrain_swap
+
+    let flux_swap = textures.flux
+    textures.flux = textures.fluxTemp
+    textures.fluxTemp = flux_swap
     
     encoder.endEncoding()
   }
@@ -298,3 +326,4 @@ extension HeightField {
     recalculateNormals(commandBuffer: commandBuffer)
   }
 }
+

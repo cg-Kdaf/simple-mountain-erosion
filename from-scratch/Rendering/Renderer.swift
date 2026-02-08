@@ -8,6 +8,7 @@
 import MetalKit
 import MetalPerformanceShaders
 import QuartzCore
+import SwiftUI
 
 class Renderer: MTKViewDelegate {
   struct Stats {
@@ -18,15 +19,6 @@ class Renderer: MTKViewDelegate {
     var drawableSize: CGSize
     var deviceName: String
     var shaderReloads: Int
-  }
-
-  struct Camera {
-    var position: SIMD3<Float>
-    var forward: SIMD3<Float>
-    var right: SIMD3<Float>
-    var up: SIMD3<Float>
-    var fovYRadians: Float
-    var aspect: Float
   }
 
   let device: MTLDevice
@@ -43,10 +35,14 @@ class Renderer: MTKViewDelegate {
   
   var meshResolution: UInt
   var textureResolution: UInt
+  @Binding var meshSize: Float
   var shaderReloads: Int = 0
 
-  var camera: Camera
-  var cameraBuffer: MTLBuffer
+  var raytracingUniforms: RayTracingUniforms
+  var raytracingUniformsBuffer: MTLBuffer
+  
+  var heightMapUniforms: HeightMapUniforms
+  
   var onStats: ((Stats) -> Void)?
 
   private var lastFrameTimestamp: CFTimeInterval = CACurrentMediaTime()
@@ -56,7 +52,11 @@ class Renderer: MTKViewDelegate {
   private var orbitPitch: Double = -0.5
   private var orbitDistance: Double = 3.0
 
-  init?(metalKitView: MTKView, meshResolution: UInt, textureResolution: UInt) {
+  init?(metalKitView: MTKView,
+        meshResolution: UInt,
+        textureResolution: UInt,
+        meshSize: Binding<Float>,
+        heightMapUniforms: HeightMapUniforms) {
     metalKitView.colorPixelFormat = .rgba16Float
     metalKitView.sampleCount = 1
     metalKitView.drawableSize = metalKitView.frame.size
@@ -74,18 +74,17 @@ class Renderer: MTKViewDelegate {
 
     let size = metalKitView.drawableSize
     let aspect = Float(size.width / max(size.height, 1))
-    let eye = SIMD3<Float>(1.0, 1.0, 1.5)
+    let eye = SIMD3<Float>(0, 0, 0)
     let lookAt = SIMD3<Float>(0, 0, 0)
     let worldUp = SIMD3<Float>(0, 1, 0)
     let forward = simd_normalize(lookAt - eye)
     let right = simd_normalize(simd_cross(forward, worldUp))
     let up = simd_normalize(simd_cross(right, forward))
     let fovYRadians: Float = 60.0 * .pi / 180.0
-    let cam = Camera(position: eye, forward: forward, right: right, up: up, fovYRadians: fovYRadians, aspect: aspect)
-    camera = cam
-    guard let camBuf = device.makeBuffer(length: MemoryLayout<Camera>.stride, options: .storageModeShared) else { return nil }
-    cameraBuffer = camBuf
-    memcpy(cameraBuffer.contents(), &camera, MemoryLayout<Camera>.stride)
+    let cam = CameraProperties(position: eye, forward: forward, right: right, up: up, fovYRadians: fovYRadians, aspect: aspect)
+    raytracingUniforms = .init(camera: cam, meshSize: 0.0, overlayDebug: Shading)
+    raytracingUniformsBuffer = device.makeBuffer(length: MemoryLayout<RayTracingUniforms>.stride, options: .storageModeShared)!
+    memcpy(raytracingUniformsBuffer.contents(), &raytracingUniforms, MemoryLayout<RayTracingUniforms>.stride)
 
     semaphore = DispatchSemaphore.init(value: maxFramesInFlight)
     hash = 100
@@ -93,12 +92,29 @@ class Renderer: MTKViewDelegate {
     
     self.meshResolution = meshResolution
     self.textureResolution = textureResolution
+    self._meshSize = meshSize
     let mesh = MeshFactory.makeExplicitPlane(allocator: MTKMeshBufferAllocator(device: device),
                                              device: device,
+                                             width: 1.0,
+                                             height: 1.0,
                                              segmentsX: Int(meshResolution),
                                              segmentsY: Int(meshResolution))
     scene_displaced = BasicScene(mesh: mesh)
-    heightField = HeightField(device: device, textureResolution: Int(textureResolution), library: device.makeDefaultLibrary())
+    self.heightMapUniforms = .init(deltaX: meshSize.wrappedValue/Float(meshResolution),
+                                   deltaY: meshSize.wrappedValue/Float(meshResolution),
+                                   dt: 0.012,
+                                   l_pipe: 0.2,
+                                   gravity: 9.81,
+                                   A_pipe: 1.0,
+                                   Kc: 0.5,
+                                   Ks: 0.1,
+                                   Kb: 0.001,
+                                   Kd: 0.1,
+                                   Ke: 0.015)
+    heightField = HeightField(device: device,
+                              textureResolution: Int(textureResolution),
+                              library: device.makeDefaultLibrary(),
+                              simulationUniforms: self.heightMapUniforms)
 
     pipeline = RenderingPipeline(device: self.device, view: metalKitView, scene: scene_displaced)
     pipeline.buildVertexPipeline(initial_buffer: (scene_displaced.mesh.vertexBuffers.first!.buffer), heightField: heightField)
@@ -117,6 +133,10 @@ class Renderer: MTKViewDelegate {
       commandBuffer.commit()
       commandBuffer.waitUntilCompleted()
     }
+  }
+  
+  func updateErosionUniform(_ data: HeightMapUniforms) {
+    heightField.updateErosionUniformBuffer(data)
   }
 
   private func emitStats(for view: MTKView, delta: CFTimeInterval) {
@@ -137,7 +157,7 @@ class Renderer: MTKViewDelegate {
   
   private func updateCameraBasis(lookAt target: SIMD3<Float>) {
     let worldUp = SIMD3<Float>(0, 1, 0)
-    var forward = simd_normalize(target - camera.position)
+    var forward = simd_normalize(target - raytracingUniforms.camera.position)
     // If forward is almost parallel to worldUp, choose a different up to avoid degeneracy
     let parallelThreshold: Float = 0.99
     var upCandidate = worldUp
@@ -147,15 +167,15 @@ class Renderer: MTKViewDelegate {
     let right = simd_normalize(simd_cross(forward, upCandidate))
     let up = simd_normalize(simd_cross(right, forward))
     forward = simd_normalize(forward)
-    camera.forward = forward
-    camera.right = right
-    camera.up = up
+    raytracingUniforms.camera.forward = forward
+    raytracingUniforms.camera.right = right
+    raytracingUniforms.camera.up = up
   }
   
   func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
     let aspect = Float(size.width / max(size.height, 1))
-    camera.aspect = aspect
-    memcpy(cameraBuffer.contents(), &camera, MemoryLayout<Camera>.stride)
+    raytracingUniforms.camera.aspect = aspect
+    memcpy(raytracingUniformsBuffer.contents(), &raytracingUniforms, MemoryLayout<RayTracingUniforms>.stride)
   }
   
   func updateResolutions(mesh newMeshResolution: UInt, texture newTextureResolution: UInt) {
@@ -233,6 +253,9 @@ class Renderer: MTKViewDelegate {
     displaceEncoder.setBytes(&vCount,
                              length: MemoryLayout<UInt32>.size,
                              index: 2)
+    displaceEncoder.setBytes(&meshSize,
+                             length: MemoryLayout<Float>.size,
+                             index: 3)
     displaceEncoder.setTexture(heightField.textures.terrain, index: 0)
     
     // Calculate Dispatch Size (1D Grid for vertices)
@@ -257,7 +280,7 @@ class Renderer: MTKViewDelegate {
     computeEncoder.setTexture(heightField.textures.terrain, index: 2)
     computeEncoder.setBuffer(scene_displaced.mesh.vertexBuffers.first!.buffer, offset: 0, index: 1)
     computeEncoder.setBuffer(scene_displaced.mesh.submeshes.first!.indexBuffer.buffer, offset: 0, index: 2)
-    computeEncoder.setBuffer(cameraBuffer, offset: 0, index: 3)
+    computeEncoder.setBuffer(raytracingUniformsBuffer, offset: 0, index: 3)
 
     computeEncoder.setAccelerationStructure(pipeline.accelerationStructureBuilder.accelerationStructure, bufferIndex: 0)
     let w = Int(view.drawableSize.width)
@@ -322,27 +345,27 @@ class Renderer: MTKViewDelegate {
 }
 
 extension Renderer: OrbitControllable {
-    func setOrbit(yaw: Double, pitch: Double, distance: Double) {
-        // Cache values with safety clamps
-        orbitYaw = yaw
-        orbitPitch = max(-1.5, min(1.5, pitch))
-        orbitDistance = max(0.1, min(200.0, distance))
+  func setOrbit(yaw: Double, pitch: Double, distance: Double) {
+    // Cache values with safety clamps
+    orbitYaw = yaw
+    orbitPitch = max(-1.5, min(1.5, pitch))
+    orbitDistance = max(0.1, min(300.0, distance))
 
-        // Target the origin (0,0,0). Compute spherical coordinates (yaw around Y, pitch around X).
-        let target = SIMD3<Float>(0, 0, 0)
-        let cosPitch = cos(orbitPitch)
-        let sinPitch = sin(orbitPitch)
-        let cosYaw = cos(orbitYaw)
-        let sinYaw = sin(orbitYaw)
-        // Yaw = 0 looks toward -Z for a typical right-handed view
-        let offset = SIMD3<Float>(
-          Float(cosPitch * sinYaw * orbitDistance),
-          Float(sinPitch * orbitDistance),
-          Float(-cosPitch * cosYaw * orbitDistance)
-        )
-        camera.position = target + offset
+    // Target the origin (0,0,0). Compute spherical coordinates (yaw around Y, pitch around X).
+    let target = SIMD3<Float>(0, 0, 0)
+    let cosPitch = cos(orbitPitch)
+    let sinPitch = sin(orbitPitch)
+    let cosYaw = cos(orbitYaw)
+    let sinYaw = sin(orbitYaw)
+    // Yaw = 0 looks toward -Z for a typical right-handed view
+    let offset = SIMD3<Float>(
+      Float(cosPitch * sinYaw * orbitDistance),
+      Float(sinPitch * orbitDistance),
+      Float(-cosPitch * cosYaw * orbitDistance)
+    )
+    raytracingUniforms.camera.position = target + offset
 
-        updateCameraBasis(lookAt: target)
-        memcpy(cameraBuffer.contents(), &camera, MemoryLayout<Camera>.stride)
-    }
+    updateCameraBasis(lookAt: target)
+    memcpy(raytracingUniformsBuffer.contents(), &raytracingUniforms, MemoryLayout<RayTracingUniforms>.stride)
+  }
 }

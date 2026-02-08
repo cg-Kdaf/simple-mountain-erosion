@@ -68,196 +68,349 @@ struct MetalRTView: NSViewRepresentable {
   }
 }
 
-struct ContentView: View {
-    @State private var yaw: Double = 0.0
-    @State private var pitch: Double = -0.5
-    @State private var distance: Double = 3.0
-    @State private var lastDragPosition: CGPoint = .zero
-    @State private var isDragging: Bool = false
-    @State private var renderer: Renderer?
-    @State private var meshResolution: Double = 512
-    @State private var textureResolution: Double = 512
-    @State private var stats: Renderer.Stats?
-    @State private var showControls: Bool = true
-    @State private var showHUD: Bool = true
-    @State private var autoTurn: Bool = false
-    @State private var lastAutoTick: Date?
-    @State private var autoTimer = Timer.publish(every: 1.0/60.0, on: .main, in: .common).autoconnect()
+extension HeightMapUniforms: Equatable {
+    public static func == (lhs: HeightMapUniforms, rhs: HeightMapUniforms) -> Bool {
+        return lhs.deltaX == rhs.deltaX &&
+               lhs.deltaY == rhs.deltaY &&
+               lhs.dt == rhs.dt &&
+               lhs.l_pipe == rhs.l_pipe &&
+               lhs.gravity == rhs.gravity &&
+               lhs.A_pipe == rhs.A_pipe &&
+               lhs.Kc == rhs.Kc &&
+               lhs.Ks == rhs.Ks &&
+               lhs.Kb == rhs.Kb &&
+               lhs.Kd == rhs.Kd &&
+               lhs.Ke == rhs.Ke
+    }
+}
 
-    var body: some View {
-      NavigationStack {
-        ZStack(alignment: .topLeading) {
-          LinearGradient(
-            colors: [Color(red: 0.05, green: 0.05, blue: 0.08), Color(red: 0.12, green: 0.14, blue: 0.18)],
-            startPoint: .topLeading,
-            endPoint: .bottomTrailing)
-          .ignoresSafeArea()
-          
-          MetalRTView(renderer: $renderer, yaw: yaw, pitch: pitch, distance: distance, onStats: { stats = $0 }, onScroll: { delta in
-            let sensitivity = 0.01
-            distance -= delta * sensitivity
-            distance = max(0.1, min(200.0, distance))
-            renderer?.setOrbit(yaw: yaw, pitch: pitch, distance: distance)
-          }) { mtkView in
-            Renderer(metalKitView: mtkView,
-                     meshResolution: UInt(meshResolution),
-                     textureResolution: UInt(textureResolution))!
-          }
-          .gesture(
-            DragGesture(minimumDistance: 0)
-              .onEnded { _ in
-                isDragging = false
-              }
-              .onChanged { value in
-                if (!isDragging) {
-                  isDragging = true
-                  lastDragPosition = value.location
-                  return
-                }
-                let delta = CGSize(width: value.location.x - lastDragPosition.x,
-                                   height: value.location.y - lastDragPosition.y)
-                lastDragPosition = value.location
-                let sensitivityYaw = 0.003
-                let sensitivityPitch = 0.003
-                let newYaw = yaw + Double(delta.width) * sensitivityYaw
-                let newPitch = pitch + Double(delta.height) * sensitivityPitch
-                let clampedPitch = max(-1.4, min(1.4, newPitch))
-                if yaw != newYaw { yaw = newYaw }
-                if pitch != clampedPitch { pitch = clampedPitch }
-              }
-          )
-          .onReceive(autoTimer) { date in
-            guard autoTurn, let renderer else { lastAutoTick = date; return }
-            let dt: Double
-            if let last = lastAutoTick {
-              dt = max(0, date.timeIntervalSince(last))
-            } else {
-              dt = 1.0 / 60.0
-            }
-            lastAutoTick = date
-            let speed: Double = 0.8 // radians per second
-            yaw += dt * speed
-            if yaw > .pi { yaw -= 2 * .pi } else if yaw < -.pi { yaw += 2 * .pi }
-            renderer.setOrbit(yaw: yaw, pitch: pitch, distance: distance)
-          }
-
-          if showControls {
-            VStack(alignment: .leading, spacing: 12) {
-              HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                  Text("Metal Playground")
-                    .font(.headline.weight(.bold))
-                    .foregroundStyle(.white.opacity(0.9))
-                  Text("Live shaders, grid + stats")
-                    .font(.subheadline)
-                    .foregroundStyle(.white.opacity(0.6))
-                }
-                Spacer()
-                Button(action: { showHUD.toggle() }) {
-                  Image(systemName: showHUD ? "eye" : "eye.slash")
-                    .foregroundStyle(.white)
-                    .padding(8)
-                    .background(.white.opacity(0.08), in: Circle())
-                }
-              }
-
-              if showHUD {
-                GroupBox {
-                  VStack(alignment: .leading, spacing: 8) {
-                    if let stats {
-                      Text("Device: \(stats.deviceName)").font(.subheadline)
-                      Text(String(format: "FPS: %.1f", stats.fps)).font(.subheadline).monospacedDigit()
-                      Text(String(format: "Frame: %.2f ms", stats.frameTimeMs)).font(.subheadline).monospacedDigit()
-                      Text("Mesh: \(stats.meshResolution) x \(stats.meshResolution)").font(.subheadline)
-                      Text("Texture: \(stats.textureResolution) x \(stats.textureResolution)").font(.subheadline)
-                      Text("Drawable: \(Int(stats.drawableSize.width)) x \(Int(stats.drawableSize.height))").font(.subheadline)
-                      Text("Shader reloads: \(stats.shaderReloads)").font(.subheadline)
-                    } else {
-                      Text("Waiting for stats...")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                    }
-                  }
-                  .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .groupBoxStyle(.automatic)
-              }
-
-              GroupBox(label: Label("Live Controls", systemImage: "slider.horizontal.3")) {
-                VStack(alignment: .leading, spacing: 10) {
-                  VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                      Text("Mesh resolution")
-                      Spacer()
-                      Text("\(Int(meshResolution))").monospacedDigit()
-                    }
-                    Slider(value: $meshResolution, in: 32...2048, step: 32)
-
-                    HStack {
-                      Text("Texture resolution")
-                      Spacer()
-                      Text("\(Int(textureResolution))").monospacedDigit()
-                    }
-                    Slider(value: $textureResolution, in: 32...2048, step: 32)
-                  }
-
-                  HStack(spacing: 10) {
-                    Button("Apply") { applyResolution() }
-                      .buttonStyle(.borderedProminent)
-                      .disabled(renderer == nil)
-                    Button("Fit to 512") {
-                      meshResolution = 512
-                      textureResolution = 512
-                      applyResolution()
-                    }
-                    .disabled(renderer == nil)
-                  }
-                  HStack(spacing: 8) {
-                    Button("Reload Shaders") { renderer?.reloadShaders() }
-                      .buttonStyle(.borderedProminent)
-                    Button("Reset Camera") { resetCamera() }
-                      .buttonStyle(.bordered)
-                    Button("Reset HeightField") { renderer?.heightField.resetHeightField() }
-                      .buttonStyle(.bordered)
-                    Button(autoTurn ? "Stop Auto" : "Auto Turn") {
-                      autoTurn.toggle()
-                      lastAutoTick = nil
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(renderer == nil)
-                  }
-                }
-              }
-            }
-            .padding(16)
-            .frame(maxWidth: 420)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .padding([.top, .leading], 18)
-          }
+struct CollapsibleSection<Content: View>: View {
+  let title: String
+  let icon: String
+  @Binding var isExpanded: Bool
+  @ViewBuilder let content: () -> Content
+  
+  var body: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      Button(action: { withAnimation(.easeInOut(duration: 0.2)) { isExpanded.toggle() } }) {
+        HStack {
+          Label(title, systemImage: icon)
+            .font(.caption)
+            .foregroundStyle(.white)
+          Spacer()
+          Image(systemName: "chevron.right")
+            .rotationEffect(.degrees(isExpanded ? 90 : 0))
+            .foregroundStyle(.white.opacity(0.6))
         }
-        .toolbar {
-          ToolbarItem(placement: .automatic) {
-            Button(action: { withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) { showControls.toggle() } }) {
-              Image(systemName: showControls ? "rectangle.and.hand.point.up.left" : "rectangle")
+        .padding(10)
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      
+      if isExpanded {
+        Divider()
+          .padding(.horizontal, 10)
+        
+        content()
+          .padding(.vertical, 10)
+          .padding(.horizontal, 10)
+          .transition(.opacity.combined(with: .move(edge: .top)))
+      }
+    }
+    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+  }
+}
+
+struct ContentView: View {
+  @State private var yaw: Double = 0.0
+  @State private var pitch: Double = 0.8
+  @State private var distance: Double = 250.0
+  @State private var lastDragPosition: CGPoint = .zero
+  @State private var isDragging: Bool = false
+  @State private var renderer: Renderer?
+  @State private var meshResolution: Double = 512
+  @State private var textureResolution: Double = 1024
+  @State private var meshSize: Float = 500.0
+  @State private var stats: Renderer.Stats?
+  @State private var showControls: Bool = true
+  @State private var autoTurn: Bool = false
+  @State private var lastAutoTick: Date?
+  @State private var heightMapUniforms: HeightMapUniforms = .init(deltaX: Float(500.0/1024.0),
+                                                                  deltaY: Float(500.0/1024.0),
+                                                                  dt: 0.012,
+                                                                  l_pipe: 0.2,
+                                                                  gravity: 9.81,
+                                                                  A_pipe: 1.0,
+                                                                  Kc: 0.5,
+                                                                  Ks: 0.1,
+                                                                  Kb: 0.001,
+                                                                  Kd: 0.1,
+                                                                  Ke: 0.015)
+  @State private var autoTimer = Timer.publish(every: 1.0/60.0, on: .main, in: .common).autoconnect()
+  @State private var expandedStats: Bool = false
+  @State private var expandedLiveControls: Bool = false
+  @State private var expandedErosion: Bool = false
+  @State private var expandedHeightMap: Bool = false
+
+  var body: some View {
+    NavigationStack {
+      ZStack(alignment: .topLeading) {
+        LinearGradient(
+          colors: [Color(red: 0.05, green: 0.05, blue: 0.08), Color(red: 0.12, green: 0.14, blue: 0.18)],
+          startPoint: .topLeading,
+          endPoint: .bottomTrailing)
+        .ignoresSafeArea()
+        
+        MetalRTView(renderer: $renderer, yaw: yaw, pitch: pitch, distance: distance, onStats: { stats = $0 }, onScroll: { delta in
+          let sensitivity = 0.01
+          distance -= delta * sensitivity
+          distance = max(0.1, min(250.0, distance))
+          renderer?.setOrbit(yaw: yaw, pitch: pitch, distance: distance)
+        }) { mtkView in
+          Renderer(metalKitView: mtkView,
+                   meshResolution: UInt(meshResolution),
+                   textureResolution: UInt(textureResolution),
+                   meshSize: $meshSize,
+                   heightMapUniforms: heightMapUniforms)!
+        }
+        .gesture(
+          DragGesture(minimumDistance: 0)
+            .onEnded { _ in
+              isDragging = false
             }
-            .help(showControls ? "Hide controls" : "Show controls")
+            .onChanged { value in
+              if (!isDragging) {
+                isDragging = true
+                lastDragPosition = value.location
+                return
+              }
+              let delta = CGSize(width: value.location.x - lastDragPosition.x,
+                                 height: value.location.y - lastDragPosition.y)
+              lastDragPosition = value.location
+              let sensitivityYaw = 0.003
+              let sensitivityPitch = 0.003
+              let newYaw = yaw + Double(delta.width) * sensitivityYaw
+              let newPitch = pitch + Double(delta.height) * sensitivityPitch
+              let clampedPitch = max(-1.4, min(1.4, newPitch))
+              if yaw != newYaw { yaw = newYaw }
+              if pitch != clampedPitch { pitch = clampedPitch }
+            }
+        )
+        .onReceive(autoTimer) { date in
+          guard autoTurn, let renderer else { lastAutoTick = date; return }
+          let dt: Double
+          if let last = lastAutoTick {
+            dt = max(0, date.timeIntervalSince(last))
+          } else {
+            dt = 1.0 / 60.0
           }
+          lastAutoTick = date
+          let speed: Double = 0.8 // radians per second
+          yaw += dt * speed
+          if yaw > .pi { yaw -= 2 * .pi } else if yaw < -.pi { yaw += 2 * .pi }
+          renderer.setOrbit(yaw: yaw, pitch: pitch, distance: distance)
+        }
+
+        if showControls {
+          VStack(alignment: .leading, spacing: 10) {
+            CollapsibleSection(title: "Stats", icon: "chart.bar", isExpanded: $expandedStats) {
+              VStack(alignment: .leading, spacing: 4) {
+                if let stats {
+                  Text("Device: \(stats.deviceName)").font(.caption)
+                  Text(String(format: "FPS: %.1f", stats.fps)).font(.caption).monospacedDigit()
+                  Text(String(format: "Frame: %.2f ms", stats.frameTimeMs)).font(.caption).monospacedDigit()
+                  Text("Mesh: \(stats.meshResolution) x \(stats.meshResolution)").font(.caption)
+                  Text("Texture: \(stats.textureResolution) x \(stats.textureResolution)").font(.caption)
+                  Text("Drawable: \(Int(stats.drawableSize.width)) x \(Int(stats.drawableSize.height))").font(.caption)
+                  Text("Shader reloads: \(stats.shaderReloads)").font(.caption)
+                } else {
+                  Text("Waiting for stats...")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+              }
+            }
+            
+            CollapsibleSection(title: "Erosion Controls", icon: "water.waves.and.arrow.down", isExpanded: $expandedErosion) {
+              VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: 4) {
+                  HStack {
+                    Text("Time step (dt)").font(.caption2)
+                    Spacer()
+                    Text(String(format: "%.4f", heightMapUniforms.dt)).monospacedDigit().font(.caption2)
+                  }
+                  Slider(value: $heightMapUniforms.dt, in: 0.001...0.1)
+                  
+                  HStack {
+                    Text("Pipe length (l_pipe)").font(.caption2)
+                    Spacer()
+                    Text(String(format: "%.3f", heightMapUniforms.l_pipe)).monospacedDigit().font(.caption2)
+                  }
+                  Slider(value: $heightMapUniforms.l_pipe, in: 0.05...2.0)
+                  
+                  HStack {
+                    Text("Gravity").font(.caption2)
+                    Spacer()
+                    Text(String(format: "%.2f", heightMapUniforms.gravity)).monospacedDigit().font(.caption2)
+                  }
+                  Slider(value: $heightMapUniforms.gravity, in: 0.0...20.0)
+                  
+                  HStack {
+                    Text("Pipe area (A_pipe)").font(.caption2)
+                    Spacer()
+                    Text(String(format: "%.3f", heightMapUniforms.A_pipe)).monospacedDigit().font(.caption2)
+                  }
+                  Slider(value: $heightMapUniforms.A_pipe, in: 0.1...5.0)
+                  
+                  HStack {
+                    Text("Capacity (Kc)").font(.caption2)
+                    Spacer()
+                    Text(String(format: "%.3f", heightMapUniforms.Kc)).monospacedDigit().font(.caption2)
+                  }
+                  Slider(value: $heightMapUniforms.Kc, in: 0.0...2.0)
+                  
+                  HStack {
+                    Text("Dissolving regolith (Ks)").font(.caption2)
+                    Spacer()
+                    Text(String(format: "%.3f", heightMapUniforms.Ks)).monospacedDigit().font(.caption2)
+                  }
+                  Slider(value: $heightMapUniforms.Ks, in: 0.0...1.0)
+                  
+                  HStack {
+                    Text("Dissolving bedrock (Kb)").font(.caption2)
+                    Spacer()
+                    Text(String(format: "%.4f", heightMapUniforms.Kb)).monospacedDigit().font(.caption2)
+                  }
+                  Slider(value: $heightMapUniforms.Kb, in: 0.0...0.1)
+                  
+                  HStack {
+                    Text("Deposition (Kd)").font(.caption2)
+                    Spacer()
+                    Text(String(format: "%.3f", heightMapUniforms.Kd)).monospacedDigit().font(.caption2)
+                  }
+                  Slider(value: $heightMapUniforms.Kd, in: 0.0...1.0)
+                  
+                  HStack {
+                    Text("Evaporation (Ke)").font(.caption2)
+                    Spacer()
+                    Text(String(format: "%.4f", heightMapUniforms.Ke)).monospacedDigit().font(.caption2)
+                  }
+                  Slider(value: $heightMapUniforms.Ke, in: 0.0...0.1)
+                }
+                
+                Button("Reset Defaults") {
+                  resetErosionDefaults()
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+              }
+              .onChange(of: heightMapUniforms) { _,newval in
+                renderer?.updateErosionUniform(newval)
+              }
+            }
+            
+            CollapsibleSection(title: "HeightMap Controls", icon: "square.and.pencil", isExpanded: $expandedHeightMap) {
+              VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: 4) {
+                  HStack {
+                    Text("Definition").font(.caption2)
+                    Spacer()
+                    Text("\(Int(meshResolution))").monospacedDigit().font(.caption2)
+                  }
+                  Slider(value: $meshResolution, in: 32...2048, step: 32)
+                  
+                  HStack {
+                    Text("Scale").font(.caption2)
+                    Spacer()
+                    Text("\(Int(meshSize))").monospacedDigit().font(.caption2)
+                  }
+                  Slider(value: $meshSize, in: 1.0...1000.0)
+                  
+                  HStack {
+                    Text("Texture size").font(.caption2)
+                    Spacer()
+                    Text("\(Int(textureResolution))").monospacedDigit().font(.caption2)
+                  }
+                  Slider(value: $textureResolution, in: 32...2048, step: 32)
+                }
+                
+                HStack(spacing: 6) {
+                  Button("Apply") { applyResolution() }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(renderer == nil)
+                  Button("Reset") { resetHeightMap() }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(renderer == nil)
+                  Button("Fit to 512") {
+                    meshResolution = 512
+                    textureResolution = 512
+                    applyResolution()
+                  }
+                  .controlSize(.small)
+                  .disabled(renderer == nil)
+                  Button("Reload Shaders") { renderer?.reloadShaders() }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                  Button(autoTurn ? "Stop Auto Camera Turn" : "Auto Turn Camera") {
+                    autoTurn.toggle()
+                    lastAutoTick = nil
+                  }
+                  .buttonStyle(.bordered)
+                  .controlSize(.small)
+                }
+              }
+            }
+          }
+          .frame(maxWidth: 340)
+          .padding([.top, .leading], 12)
+        }
+      }
+      .toolbar {
+        ToolbarItem(placement: .automatic) {
+          Button(action: { withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) { showControls.toggle() } }) {
+            Image(systemName: showControls ? "rectangle.and.hand.point.up.left" : "rectangle")
+          }
+          .help(showControls ? "Hide controls" : "Show controls")
         }
       }
     }
+  }
+
+  private func applyResolution() {
+    let meshTarget = UInt(meshResolution.rounded())
+    let textureTarget = UInt(textureResolution.rounded())
+    renderer?.updateResolutions(mesh: meshTarget, texture: textureTarget)
+  }
   
-    private func applyResolution() {
-      let meshTarget = UInt(meshResolution.rounded())
-      let textureTarget = UInt(textureResolution.rounded())
-      renderer?.updateResolutions(mesh: meshTarget, texture: textureTarget)
-    }
-    
-    private func resetCamera() {
-      yaw = 0.0
-      pitch = -0.5
-      distance = 3.0
-      renderer?.setOrbit(yaw: yaw, pitch: pitch, distance: distance)
-    }
+  private func resetCamera() {
+    yaw = 0.0
+    pitch = -0.5
+    distance = 3.0
+    renderer?.setOrbit(yaw: yaw, pitch: pitch, distance: distance)
+  }
+  
+  private func resetErosionDefaults() {
+    heightMapUniforms = HeightMapUniforms(
+      deltaX: Float(meshSize / Float(textureResolution)),
+      deltaY: Float(meshSize / Float(textureResolution)),
+      dt: 0.012,
+      l_pipe: 0.2,
+      gravity: 9.81,
+      A_pipe: 1.0,
+      Kc: 0.5,
+      Ks: 0.1,
+      Kb: 0.001,
+      Kd: 0.1,
+      Ke: 0.015
+    )
+    renderer?.updateErosionUniform(heightMapUniforms)
+  }
+  
+  private func resetHeightMap() {
+    renderer?.heightField.resetHeightField()
+  }
 }
 
 #Preview {

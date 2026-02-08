@@ -8,6 +8,6 @@
 #include <metal_stdlib>
 using namespace metal;
 
-float getWholeHeight(float4 terrain) {
-  return (terrain.x + terrain.y /*+ terrain.z*/) / 10.0;
+float __getWholeHeight(float4 terrain) {
+  return (terrain.x + terrain.y + terrain.z) / 10.0;
 }

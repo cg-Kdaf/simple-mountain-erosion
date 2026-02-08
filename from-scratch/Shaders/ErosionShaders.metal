@@ -11,12 +11,14 @@ using namespace metal;
 
 static float basicMountainForErosion(float2 uv) {
   float h = exp(-10.0 * pow(length(uv - float2(0.5)), 2)) / 2.0;
+  float details = cos(uv.x * 10.0) + cos (uv.y * 10.0);
+  float details2 = cos(uv.x * 100.0) + cos (uv.y * 100.0);
   
-  return pow(h, 4.0) * 10.0;
+  return pow(h, 4.0) * 10.0 + details * 0.06 + details2 * 0.003;
 }
 
 static float getDisplacement(float2 uv) {
-    return basicMountainForErosion(uv) * 10.0;
+    return basicMountainForErosion(uv) * 1000.0;
 }
 
 kernel void reset_heightmap(
@@ -30,7 +32,7 @@ kernel void reset_heightmap(
   float2 uv = (float2(gid) + 0.5) / float2(width, height);
 
   float hC = getDisplacement(uv);
-  heightTex.write(float4(hC, 1.0, 0.5, 0.0), gid);
+  heightTex.write(float4(max(0.0, hC) + 3.0, 50.0, (length(uv - float2(0.5)) < 0.1) * 0.5, 0.0), gid);
 }
 
 kernel void live_animation_heightmap(
@@ -72,6 +74,7 @@ kernel void progressive_blur(
 kernel void recalculate_normals(
   texture2d<float, access::read_write> heightTex [[texture(0)]],
   texture2d<float, access::read_write> normalTex [[texture(1)]],
+  constant HeightMapUniforms& hmU [[buffer(0)]],
   uint2 gid [[thread_position_in_grid]])
 {
   uint w = heightTex.get_width();
@@ -90,25 +93,10 @@ kernel void recalculate_normals(
 
   float dhdx = (hR - hL) * 0.5;
   float dhdy = (hU - hD) * 0.5;
-  float scale = 300.0;
 
-  float3 N = normalize(float3(-dhdx * scale, 1.0, -dhdy * scale));
+  float3 N = normalize(float3(-dhdx / hmU.deltaX, 1.0, -dhdy / hmU.deltaY));
   normalTex.write(float4(N, 1.0), gid);
 }
-
-
-// Simulation Constants
-constant float dt = 0.012;         // Time step
-constant float l_pipe = 0.2;       // Pipe length (grid spacing)
-constant float gravity = 9.81;
-constant float A_pipe = 1.0;       // Pipe cross-section area
-
-// Erosion Constants (Stava 2008)
-constant float Kc = 0.5;           // Sediment capacity constant
-constant float Ks = 0.3;           // Dissolving constant (Regolith softness)
-constant float Kb = 0.05;          // Dissolving constant (Bedrock hardness)
-constant float Kd = 0.1;           // Deposition constant
-constant float Ke = 0.015;         // Evaporation constant
 
 // Helper to get boundary-safe values
 inline float4 read_tex(texture2d<float, access::read> tex, int2 pos) {
@@ -124,6 +112,7 @@ inline float4 read_tex(texture2d<float, access::read> tex, int2 pos) {
 kernel void add_rain(
     texture2d<float, access::read> terrainRead [[texture(0)]],
     texture2d<float, access::write> terrainWrite [[texture(1)]],
+    constant HeightMapUniforms& hmU [[buffer(0)]],
     uint2 gid [[thread_position_in_grid]])
 {
     if (gid.x >= terrainRead.get_width() || gid.y >= terrainRead.get_height()) return;
@@ -134,7 +123,7 @@ kernel void add_rain(
     // Add simple uniform rain. In a real app, use a noise texture here.
     float rain_amount = 0.0;
     
-    state.b += rain_amount * dt;
+    state.b += rain_amount * hmU.dt;
     
     terrainWrite.write(state, gid);
 }
@@ -146,6 +135,7 @@ kernel void calc_flux(
     texture2d<float, access::read> terrain [[texture(0)]],
     texture2d<float, access::read> fluxRead [[texture(1)]],
     texture2d<float, access::write> fluxWrite [[texture(2)]],
+    constant HeightMapUniforms& hmU [[buffer(0)]],
     uint2 gid [[thread_position_in_grid]])
 {
     if (gid.x >= terrain.get_width() || gid.y >= terrain.get_height()) return;
@@ -157,25 +147,29 @@ kernel void calc_flux(
     float h = cell.r + cell.g + cell.b;
 
     // Neighbors
-    float hL = read_tex(terrain, pos + int2(-1, 0)).r + read_tex(terrain, pos + int2(-1, 0)).g + read_tex(terrain, pos + int2(-1, 0)).b;
-    float hR = read_tex(terrain, pos + int2( 1, 0)).r + read_tex(terrain, pos + int2( 1, 0)).g + read_tex(terrain, pos + int2( 1, 0)).b;
-    float hT = read_tex(terrain, pos + int2( 0, 1)).r + read_tex(terrain, pos + int2( 0, 1)).g + read_tex(terrain, pos + int2( 0, 1)).b;
-    float hB = read_tex(terrain, pos + int2( 0,-1)).r + read_tex(terrain, pos + int2( 0,-1)).g + read_tex(terrain, pos + int2( 0,-1)).b;
+  float4 terrainL = read_tex(terrain, pos + int2(-1, 0));
+  float hL = terrainL.r + terrainL.g + terrainL.b;
+  float4 terrainR = read_tex(terrain, pos + int2( 1, 0));
+  float hR = terrainR.r + terrainR.g + terrainR.b;
+  float4 terrainT = read_tex(terrain, pos + int2( 0, 1));
+  float hT = terrainT.r + terrainT.g + terrainT.b;
+  float4 terrainB = read_tex(terrain, pos + int2( 0,-1));
+  float hB = terrainB.r + terrainB.g + terrainB.b;
 
     // Current Flux (Left, Right, Top, Bottom)
     float4 f = fluxRead.read(gid);
 
     // Update Fluxes
     // f_new = max(0, f_old + dt * A * (g * deltaH) / l)
-    f.x = max(0.0, f.x + dt * A_pipe * (gravity * (h - hL)) / l_pipe); // Left
-    f.y = max(0.0, f.y + dt * A_pipe * (gravity * (h - hR)) / l_pipe); // Right
-    f.z = max(0.0, f.z + dt * A_pipe * (gravity * (h - hT)) / l_pipe); // Top
-    f.w = max(0.0, f.w + dt * A_pipe * (gravity * (h - hB)) / l_pipe); // Bottom
+    f.x = max(0.0, f.x + hmU.dt * hmU.A_pipe * (hmU.gravity * (h - hL)) / hmU.l_pipe); // Left
+    f.y = max(0.0, f.y + hmU.dt * hmU.A_pipe * (hmU.gravity * (h - hR)) / hmU.l_pipe); // Right
+    f.z = max(0.0, f.z + hmU.dt * hmU.A_pipe * (hmU.gravity * (h - hT)) / hmU.l_pipe); // Top
+    f.w = max(0.0, f.w + hmU.dt * hmU.A_pipe * (hmU.gravity * (h - hB)) / hmU.l_pipe); // Bottom
 
     // Scaling to prevent negative water
     float totalOut = f.x + f.y + f.z + f.w;
     float currentWater = cell.b;
-    float K = min(1.0, (currentWater * l_pipe * l_pipe) / (totalOut * dt + 1e-5)); // 1e-5 to avoid div/0
+    float K = min(1.0, (currentWater * hmU.l_pipe * hmU.l_pipe) / (totalOut * hmU.dt + 1e-5)); // 1e-5 to avoid div/0
 
     f *= K;
 
@@ -190,6 +184,7 @@ kernel void water_velocity(
     texture2d<float, access::write> terrainWrite [[texture(1)]],
     texture2d<float, access::read> flux [[texture(2)]],
     texture2d<float, access::write> velocityWrite [[texture(3)]],
+    constant HeightMapUniforms& hmU [[buffer(0)]],
     uint2 gid [[thread_position_in_grid]])
 {
     if (gid.x >= terrainRead.get_width() || gid.y >= terrainRead.get_height()) return;
@@ -210,8 +205,8 @@ kernel void water_velocity(
     // Update Water Height
     float4 state = terrainRead.read(gid);
     float d_old = state.b;
-    float volumeChange = dt * (sumIn - sumOut);
-    float d_new = max(0.0, d_old + volumeChange / (l_pipe * l_pipe));
+    float volumeChange = hmU.dt * (sumIn - sumOut);
+    float d_new = max(0.0, d_old + volumeChange / (hmU.l_pipe * hmU.l_pipe));
     
     state.b = d_new;
     terrainWrite.write(state, gid);
@@ -226,7 +221,7 @@ kernel void water_velocity(
         // Note: Check your coordinate system. Sometimes top/bottom flux logic flips.
         // Here we assume: Top neighbor is at y+1. Flow OUT to Top is .z. Flow IN from Top is .w (bottom flux of top neighbor).
         
-        vel = float2(u, v) / min(d_avg * l_pipe, 1.0); // Simple cap
+        vel = float2(u, v) / min(d_avg * hmU.l_pipe, 1.0); // Simple cap
     }
     
     velocityWrite.write(float4(vel.x, vel.y, 0, 0), gid);
@@ -239,6 +234,7 @@ kernel void erosion_deposition(
     texture2d<float, access::read> terrainRead [[texture(0)]],
     texture2d<float, access::write> terrainWrite [[texture(1)]],
     texture2d<float, access::read> velocity [[texture(2)]],
+    constant HeightMapUniforms& hmU [[buffer(0)]],
     uint2 gid [[thread_position_in_grid]])
 {
     if (gid.x >= terrainRead.get_width() || gid.y >= terrainRead.get_height()) return;
@@ -262,20 +258,20 @@ kernel void erosion_deposition(
     float tilt = length(grad);
 
     // 1. Capacity (C)
-    float C = Kc * tilt * speed;
+    float C = hmU.Kc * tilt * speed;
     // Usually clamped to avoid infinite erosion on cliffs or zero on flat
     C = max(0.001, C);
 
     if (s > C) {
         // --- Deposition ---
-        float amount = Kd * (s - C);
+        float amount = hmU.Kd * (s - C);
         // Deposit into Regolith layer
         state.g = r + amount;
         state.a = max(0.0, s - amount);
     }
     else {
         // --- Erosion (Hybrid) ---
-        float amount = Ks * (C - s); // Desired erosion amount
+        float amount = hmU.Ks * (C - s); // Desired erosion amount
         amount = min(amount, d); // Can't erode more than there is water force (optional stability check)
 
         // Try to erode Regolith first
@@ -292,7 +288,7 @@ kernel void erosion_deposition(
             float remainder = amount - r_removed;
             
             // Bedrock is harder (Kb)
-            float b_removed = remainder * (Kb / Ks); // Scale by hardness ratio
+            float b_removed = remainder * (hmU.Kb / hmU.Ks); // Scale by hardness ratio
             
             state.r = max(0.0, b - b_removed);
             state.a = s + r_removed + b_removed;
@@ -309,6 +305,7 @@ kernel void sediment_transport(
     texture2d<float, access::read> terrainRead [[texture(0)]],
     texture2d<float, access::write> terrainWrite [[texture(1)]],
     texture2d<float, access::read> velocity [[texture(2)]],
+    constant HeightMapUniforms& hmU [[buffer(0)]],
     uint2 gid [[thread_position_in_grid]])
 {
     if (gid.x >= terrainRead.get_width() || gid.y >= terrainRead.get_height()) return;
@@ -320,7 +317,7 @@ kernel void sediment_transport(
     
     // Backtrace coordinate: pos - velocity * dt
     float2 uv = (float2(gid) + 0.5); // Pixel center coordinates
-    float2 back_uv = uv - vel * dt;
+    float2 back_uv = uv - vel * hmU.dt;
     
     // Manual Bilinear Interpolation for Sediment 'a' channel
     // (Metal compute doesn't support 'sample' easily without sampler setup)
@@ -355,6 +352,7 @@ kernel void sediment_transport(
 kernel void evaporation(
     texture2d<float, access::read> terrainRead [[texture(0)]],
     texture2d<float, access::write> terrainWrite [[texture(1)]],
+    constant HeightMapUniforms& hmU [[buffer(0)]],
     uint2 gid [[thread_position_in_grid]])
 {
     if (gid.x >= terrainRead.get_width() || gid.y >= terrainRead.get_height()) return;
@@ -362,7 +360,7 @@ kernel void evaporation(
     float4 state = terrainRead.read(gid);
     
     // Simple exponential decay
-    state.b = state.b * (1.0 - Ke * dt);
+    state.b = state.b * (1.0 - hmU.Ke * hmU.dt);
     if(state.b < 0.0001) state.b = 0.0; // Cleanup threshold
     
     terrainWrite.write(state, gid);

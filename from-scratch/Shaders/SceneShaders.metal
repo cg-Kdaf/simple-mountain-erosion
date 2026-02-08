@@ -10,16 +10,7 @@
 using namespace metal;
 using namespace raytracing;
 
-struct Camera {
-  float3 position;
-  float3 forward;
-  float3 right;
-  float3 up;
-  float fovYRadians;
-  float aspect;
-};
-
-inline ray generateCameraRay(uint2 gid, uint2 viewportSize, Camera camera)
+inline ray generateCameraRay(uint2 gid, uint2 viewportSize, CameraProperties camera)
 {
   // 1. Map pixel center to NDC [-1, 1]
   float2 uv = (float2(gid) + 0.5) / float2(viewportSize);
@@ -58,6 +49,7 @@ kernel void compute_vertices(
     device const Vertex* inVertices [[buffer(0)]],
     device Vertex* outVertices [[buffer(1)]],
     constant uint& vertexCount [[buffer(2)]],
+    constant float& meshSize [[buffer(3)]],
     texture2d<float, access::read_write> heightTex [[texture(0)]],
     uint id [[thread_position_in_grid]])
 {
@@ -69,6 +61,7 @@ kernel void compute_vertices(
                                                     heightTex.get_height()) - float2(0.5)));
 
   outVertices[id].position.y = v.position.y + getWholeHeight(terrain);
+  outVertices[id].position.xz = v.position.xz * meshSize;
 }
 
 kernel void compute_main(texture2d<float, access::write> outTexture [[texture(0)]],
@@ -78,13 +71,13 @@ kernel void compute_main(texture2d<float, access::write> outTexture [[texture(0)
                          metal::raytracing::primitive_acceleration_structure accelerationStructure [[buffer(0)]],
                          device const Vertex* vertices [[buffer(1)]],
                          device const uint32_t* indices [[buffer(2)]],
-                         constant Camera &camera [[buffer(3)]])
+                         constant RayTracingUniforms &rtUniforms [[buffer(3)]])
 {
   uint2 size = uint2(outTexture.get_width(), outTexture.get_height());
   if (gid.x >= size.x || gid.y >= size.y) { return; }
 
   // Generate camera ray
-  ray r = generateCameraRay(gid, size, camera);
+  ray r = generateCameraRay(gid, size, rtUniforms.camera);
 
   // Intersect with the acceleration structure
   intersector<triangle_data> intersector;
