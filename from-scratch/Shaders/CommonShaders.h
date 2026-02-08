@@ -9,50 +9,20 @@
 #ifndef COMMONSHADERS_HEADERS
 #define COMMONSHADERS_HEADERS
 
-#include <simd/simd.h>
+#include <metal_stdlib>
+#include "CommonShaders-Bridging-Header.h"
+using namespace metal;
 
-static inline float getWholeHeight(simd_float4 terrain) {
+inline float getWholeHeight(simd_float4 terrain) {
   return (terrain.x + terrain.y + terrain.z) / 10.0;
 }
 
-typedef struct {
-  float deltaX;
-  float deltaY;
-
-  float dt;         // Time step
-  float l_pipe;       // Pipe length (grid spacing)
-  float gravity;
-  float A_pipe;       // Pipe cross-section area
-
-  float Kc;           // Sediment capacity constant
-  float Ks;           // Dissolving constant (Regolith softness)
-  float Kb;          // Dissolving constant (Bedrock hardness)
-  float Kd;           // Deposition constant
-  float Ke;         // Evaporation constant
-} HeightMapUniforms;
-
-typedef enum {
-  Shading,
-  Velocity,
-  Terrain,
-  Flux,
-  Normal,
-} TextureOverlay;
-
-typedef struct {
-  simd_float3 position;
-  simd_float3 forward;
-  simd_float3 right;
-  simd_float3 up;
-  float fovYRadians;
-  float aspect;
-} CameraProperties;
-
-struct RayTracingUniforms {
-  CameraProperties camera;
-  float meshSize;
-  
-  TextureOverlay overlayDebug;
-};
+// Helper to get boundary-safe values
+inline simd_float4 read_tex(texture2d<float, access::read> tex, simd_int2 pos) {
+  uint w = tex.get_width();
+  uint h = tex.get_height();
+  pos = metal::clamp(pos, simd_int2(0), simd_int2(w - 1, h - 1));
+  return tex.read(simd_uint2(pos));
+}
 
 #endif // !COMMONSHADERS_HEADERS
