@@ -77,8 +77,8 @@ kernel void compute_vertices(
 }
 
 kernel void compute_main(texture2d<float, access::write> outTexture [[texture(0)]],
-                         texture2d<float, access::read> normalTex [[texture(1)]],
-                         texture2d<float, access::read> colorTex [[texture(2)]],
+                         texture2d<float, access::sample> normalTex [[texture(1)]],
+                         texture2d<float, access::sample> colorTex [[texture(2)]],
                          uint2 gid [[thread_position_in_grid]],
                          metal::raytracing::primitive_acceleration_structure accelerationStructure [[buffer(0)]],
                          device const Vertex* vertices [[buffer(1)]],
@@ -114,12 +114,9 @@ kernel void compute_main(texture2d<float, access::write> outTexture [[texture(0)
     float2 uv2 = vertices[i2].uv;
     float2 interpUV = uv0 * w0 + uv1 * bc.x + uv2 * bc.y;
 
-    // Sample normal texture using interpolated UV
-    uint2 nSize = uint2(normalTex.get_width(), normalTex.get_height());
-    float2 sampleF = clamp(interpUV * float2(nSize), float2(0.0), float2(nSize) - 1.0);
-    uint2 sampleCoord = uint2(sampleF);
-    float4 nSample = normalTex.read(sampleCoord);
-    float3 N = normalize(nSample.xyz);
+    // Sample normal
+    constexpr sampler normalSampler(coord::normalized, address::clamp_to_edge, filter::linear);
+    float3 N = normalize(normalTex.sample(normalSampler, interpUV).xyz);
     
     // Simple Lambert shading
     float3 L = normalize(float3(0.5, 0.8, 0.6)); // fixed light direction
@@ -134,7 +131,8 @@ kernel void compute_main(texture2d<float, access::write> outTexture [[texture(0)
     float shadow = occluded ? 0.0 : 1.0;
 
     // Simple albedo to make it visible
-    float4 colored = colorTex.read(sampleCoord);
+    constexpr sampler colorSampler(coord::normalized, address::clamp_to_edge, filter::linear);
+    float4 colored = colorTex.sample(colorSampler, interpUV);
     float3 albedo = float3(0.75, 0.65, 0.55);
     albedo = float3(0.0, 0.0, 1.0) * colored.g + (1.0 - colored.g) * albedo;
 
@@ -157,11 +155,36 @@ kernel void compute_main(texture2d<float, access::write> outTexture [[texture(0)
 struct RasterizerData {
   float4 position [[position]];
   float2 uv;
+  float3 worldPos;
 };
+
+inline float4 projectWorldPosition(float3 worldPos, CameraProperties camera) {
+  float3 rel = worldPos - camera.position;
+  float viewX = dot(rel, camera.right);
+  float viewY = dot(rel, camera.up);
+  float viewZ = dot(rel, camera.forward);
+
+  float tanHalfFov = tan(camera.fovYRadians * 0.5);
+  float yScale = 1.0 / tanHalfFov;
+  float xScale = yScale / camera.aspect;
+
+  constexpr float nearPlane = 0.1;
+  constexpr float farPlane = 1000.0;
+  float zScale = farPlane / (farPlane - nearPlane);
+  float zOffset = (-nearPlane * farPlane) / (farPlane - nearPlane);
+
+  float4 clip;
+  clip.x = viewX * xScale;
+  clip.y = viewY * yScale;
+  clip.z = viewZ * zScale + zOffset;
+  clip.w = viewZ;
+  return clip;
+}
 
 vertex RasterizerData vertexShader(uint vertexID [[vertex_id]],
                                    constant Vertex *vertices [[buffer(0)]],
                                    constant float& meshSize [[buffer(1)]],
+                                   constant RayTracingUniforms &rtUniforms [[buffer(2)]],
                                    texture2d<float, access::read> heightTex [[texture(0)]]) {
   RasterizerData out;
   Vertex v = vertices[vertexID];
@@ -169,15 +192,39 @@ vertex RasterizerData vertexShader(uint vertexID [[vertex_id]],
   float4 terrain = heightTex.read(uint2(v.uv * float2(heightTex.get_width(),
                                                       heightTex.get_height()) - float2(0.5)));
   
-  out.position = float4(v.position, 1.0);
-  out.position.y = v.position.y + getWholeHeight(terrain);
-  out.position.xz = v.position.xz * meshSize;
+  float3 worldPos = v.position;
+  worldPos.y = v.position.y + getWholeHeight(terrain);
+  worldPos.xz = v.position.xz * meshSize;
+  out.position = projectWorldPosition(worldPos, rtUniforms.camera);
   out.uv = v.uv;
+  out.worldPos = worldPos;
   
   return out;
 }
 
-fragment float4 fragmentShader(RasterizerData in [[stage_in]]) {
-  return float4(in.uv.x, in.uv.y, 0.0, 1.0);
+fragment float4 fragmentShader(RasterizerData in [[stage_in]],
+                               texture2d<float, access::sample> normalTex [[texture(0)]],
+                               texture2d<float, access::sample> terrainTex [[texture(1)]],
+                               constant RayTracingUniforms &rtUniforms [[buffer(0)]]) {
+  constexpr sampler normalSampler(coord::normalized, address::clamp_to_edge, filter::linear);
+  float2 uv = clamp(in.uv, float2(0.0), float2(1.0));
+  float3 N = normalize(normalTex.sample(normalSampler, uv).xyz);
+
+  float3 L = normalize(float3(0.5, 0.8, 0.6));
+  float3 V = normalize(rtUniforms.camera.position - in.worldPos);
+
+  float ambient = 0.1;
+  float ndotl = max(dot(N, L), 0.0);
+
+  constexpr sampler terrainSampler(coord::normalized, address::clamp_to_edge, filter::linear);
+  float4 terrain = terrainTex.sample(terrainSampler, uv);
+  float3 baseAlbedo = float3(0.75, 0.65, 0.55);
+  float3 albedo = float3(0.0, 0.0, 1.0) * terrain.g + (1.0 - terrain.g) * baseAlbedo;
+
+  float3 shaded = albedo * (ambient + ndotl);
+  float rim = pow(clamp(1.0 - max(dot(N, V), 0.0), 0.0, 1.0), 2.0) * 0.05;
+  shaded += rim;
+
+  return float4(clamp(shaded, 0.0, 1.0), 1.0);
 }
 

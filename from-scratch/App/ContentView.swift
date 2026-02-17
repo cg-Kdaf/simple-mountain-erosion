@@ -139,6 +139,7 @@ struct ContentView: View {
   @State private var showControls: Bool = true
   @State private var autoTurn: Bool = false
   @State private var lastAutoTick: Date?
+  @State private var renderMode: Renderer.RenderMode = .raster
   @State private var heightMapUniforms: HeightMapUniforms = .init(deltaX: Float(500.0/1024.0),
                                                                   deltaY: Float(500.0/1024.0),
                                                                   dt: 0.012,
@@ -159,7 +160,7 @@ struct ContentView: View {
   @State private var expandedLiveControls: Bool = false
   @State private var expandedErosion: Bool = false
   @State private var expandedHeightMap: Bool = false
-  @State private var simulationPaused: Bool = false
+  @State private var simulationPaused: Bool = true
 
   var body: some View {
     NavigationStack {
@@ -181,6 +182,9 @@ struct ContentView: View {
                    textureResolution: UInt(textureResolution),
                    meshSize: $meshSize,
                    heightMapUniforms: heightMapUniforms)!
+        }
+        .onChange(of: renderMode) { _, newMode in
+          renderer?.setRenderMode(newMode)
         }
         .gesture(
           DragGesture(minimumDistance: 0)
@@ -222,6 +226,13 @@ struct ContentView: View {
 
         if showControls {
           VStack(alignment: .leading, spacing: 10) {
+            Button(renderMode == .raytracing ? "Switch to Raster" : "Switch to Ray Tracing") {
+              renderMode = renderMode == .raytracing ? .raster : .raytracing
+              renderer?.setRenderMode(renderMode)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+
             CollapsibleSection(title: "Stats", icon: "chart.bar", isExpanded: $expandedStats) {
               VStack(alignment: .leading, spacing: 4) {
                 if let stats {

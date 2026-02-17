@@ -81,7 +81,7 @@ public enum MeshFactory {
         let i2 = UInt32(row1 + i)
         let i3 = UInt32(row1 + i + 1)
         // Tri 1: i0, i1, i2; Tri 2: i2, i1, i3
-        indices.append(contentsOf: [i0, i1, i2, i2, i1, i3])
+        indices.append(contentsOf: [i1, i0, i2, i1, i2, i3])
       }
     }
     

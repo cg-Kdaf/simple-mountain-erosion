@@ -11,6 +11,11 @@ import QuartzCore
 import SwiftUI
 
 class Renderer: MTKViewDelegate {
+  enum RenderMode {
+    case raster
+    case raytracing
+  }
+
   struct Stats {
     var fps: Double
     var frameTimeMs: Double
@@ -44,6 +49,8 @@ class Renderer: MTKViewDelegate {
   var heightMapUniforms: HeightMapUniforms
   
   var onStats: ((Stats) -> Void)?
+
+  private var renderMode: RenderMode = .raster
   
   private var lastFrameTimestamp: CFTimeInterval = CACurrentMediaTime()
   
@@ -58,6 +65,7 @@ class Renderer: MTKViewDelegate {
         meshSize: Binding<Float>,
         heightMapUniforms: HeightMapUniforms) {
     metalKitView.colorPixelFormat = .rgba16Float
+    metalKitView.depthStencilPixelFormat = .depth32Float
     metalKitView.sampleCount = 1
     metalKitView.drawableSize = metalKitView.frame.size
     metalKitView.layoutSubtreeIfNeeded()
@@ -146,6 +154,10 @@ class Renderer: MTKViewDelegate {
   
   func setSimulationPaused(_ paused: Bool) {
     heightField.setPaused(paused)
+  }
+
+  func setRenderMode(_ mode: RenderMode) {
+    renderMode = mode
   }
   
   private func emitStats(for view: MTKView, delta: CFTimeInterval) {
@@ -318,20 +330,36 @@ class Renderer: MTKViewDelegate {
     lastFrameTimestamp = now
     
     semaphore.wait()
-    guard let renderPassDescriptor = view.currentRenderPassDescriptor else { return }
-    
     guard let commandBuffer = pipeline.queue.makeCommandBuffer() else { return }
+    
+    let currentTime: Float = Float(dateStart.timeIntervalSinceNow)
+    heightField.executeStep(commandBuffer: commandBuffer, currentTime: currentTime)
+    
+    guard let renderPassDescriptor = view.currentRenderPassDescriptor else { return }
     
     guard let renderEncoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor) else { return }
     
     renderEncoder.setRenderPipelineState(pipeline.rasterPipelineState)
+    renderEncoder.setDepthStencilState(pipeline.depthStencilState)
+    renderEncoder.setFrontFacing(.counterClockwise)
+    renderEncoder.setCullMode(.back)
     renderEncoder.setVertexBuffer(vertexBufferOriginal, offset: 0, index: 0)
     renderEncoder.setVertexBytes(&meshSize,
                                  length: MemoryLayout<Float>.size,
                                  index: 1)
+    renderEncoder.setVertexBuffer(raytracingUniformsBuffer, offset: 0, index: 2)
     renderEncoder.setVertexTexture(heightField.textures.terrain, index: 0)
+    renderEncoder.setFragmentBuffer(raytracingUniformsBuffer, offset: 0, index: 0)
+    renderEncoder.setFragmentTexture(heightField.textures.normal, index: 0)
+    renderEncoder.setFragmentTexture(heightField.textures.terrain, index: 1)
     
-    renderEncoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: Int(meshResolution * meshResolution))
+    if let submesh = scene_displaced.mesh.submeshes.first {
+      renderEncoder.drawIndexedPrimitives(type: submesh.primitiveType,
+                                          indexCount: submesh.indexCount,
+                                          indexType: submesh.indexType,
+                                          indexBuffer: submesh.indexBuffer.buffer,
+                                          indexBufferOffset: submesh.indexBuffer.offset)
+    }
     
     renderEncoder.endEncoding()
     
@@ -347,7 +375,12 @@ class Renderer: MTKViewDelegate {
   }
   
   func draw(in view: MTKView) {
-    raster(in: view)
+    switch renderMode {
+    case .raster:
+      raster(in: view)
+    case .raytracing:
+      raytracing(in: view)
+    }
   }
   
   func isEqual(_ object: Any?) -> Bool {

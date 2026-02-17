@@ -46,6 +46,7 @@ final class RenderingPipeline {
   let queue: MTLCommandQueue
   let device: MTLDevice
   var rasterPipelineState: MTLRenderPipelineState!
+  var depthStencilState: MTLDepthStencilState!
   var rayGenPipelineState: MTLComputePipelineState
   var displacePipelineState: MTLComputePipelineState?
   let accelerationStructureBuilder: AccelerationStructureBuilder
@@ -78,8 +79,14 @@ final class RenderingPipeline {
     rasterPipelineDescriptor.fragmentFunction = library.makeFunction(name: "fragmentShader")
     rasterPipelineDescriptor.vertexDescriptor = vD
     rasterPipelineDescriptor.colorAttachments[0].pixelFormat = view.colorPixelFormat
+    rasterPipelineDescriptor.depthAttachmentPixelFormat = view.depthStencilPixelFormat
     
     self.rasterPipelineState = try! device.makeRenderPipelineState(descriptor: rasterPipelineDescriptor)
+
+    let depthDescriptor = MTLDepthStencilDescriptor()
+    depthDescriptor.depthCompareFunction = .less
+    depthDescriptor.isDepthWriteEnabled = true
+    self.depthStencilState = device.makeDepthStencilState(descriptor: depthDescriptor)
   }
   
   /// Build vertex/texture pipelines and optionally register them on a `HeightField`.
