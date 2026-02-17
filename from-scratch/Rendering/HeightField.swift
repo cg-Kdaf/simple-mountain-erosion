@@ -62,7 +62,7 @@ final class HeightField {
   private(set) var textures: HeightFieldTextures
   private var pipelineStates: HeightFieldPipelineStates
   private var resetField: Bool = true
-  private var isPaused: Bool = false
+  private var isPaused: Bool = true
   private(set) var textureResolution: Int
   
   private var simulationUniforms: HeightMapUniforms

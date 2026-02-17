@@ -140,6 +140,7 @@ struct ContentView: View {
   @State private var autoTurn: Bool = false
   @State private var lastAutoTick: Date?
   @State private var renderMode: Renderer.RenderMode = .raster
+  @State private var debugTextureMode: TextureOverlay = Shading
   @State private var heightMapUniforms: HeightMapUniforms = .init(deltaX: Float(500.0/1024.0),
                                                                   deltaY: Float(500.0/1024.0),
                                                                   dt: 0.012,
@@ -357,6 +358,23 @@ struct ContentView: View {
                     Text(String(format: "%.3f", heightMapUniforms.velMult)).monospacedDigit().font(.caption2)
                   }
                 }
+                
+                VStack(alignment: .leading, spacing: 4) {
+                  Picker("Debug Texture", selection: $debugTextureMode) {
+                    Text("Shading").tag(Shading)
+                    Text("Velocity").tag(Velocity)
+                    Text("Terrain").tag(Terrain)
+                    Text("Flux").tag(Flux)
+                    Text("Normal").tag(Normal)
+                    Text("Slipperage").tag(Slipperage)
+                    Text("Sediment").tag(Sediment)
+                    Text("Slipperage Flux").tag(SlipperageFlux)
+                  }
+                  .pickerStyle(.radioGroup)
+                  .onChange(of: debugTextureMode) { _, newMode in
+                    renderer?.setDebugTextureMode(newMode)
+                  }
+                }.font(.caption2)
                 
                 Button("Reset Defaults") {
                   resetErosionDefaults()

@@ -51,6 +51,7 @@ class Renderer: MTKViewDelegate {
   var onStats: ((Stats) -> Void)?
 
   private var renderMode: RenderMode = .raster
+  private var debugTextureMode: TextureOverlay = Shading
   
   private var lastFrameTimestamp: CFTimeInterval = CACurrentMediaTime()
   
@@ -158,6 +159,12 @@ class Renderer: MTKViewDelegate {
 
   func setRenderMode(_ mode: RenderMode) {
     renderMode = mode
+  }
+
+  func setDebugTextureMode(_ mode: TextureOverlay) {
+    debugTextureMode = mode
+    raytracingUniforms.overlayDebug = mode
+    memcpy(raytracingUniformsBuffer.contents(), &raytracingUniforms, MemoryLayout<RayTracingUniforms>.stride)
   }
   
   private func emitStats(for view: MTKView, delta: CFTimeInterval) {
@@ -299,6 +306,11 @@ class Renderer: MTKViewDelegate {
     computeEncoder.setTexture(view.currentDrawable?.texture, index: 0)
     computeEncoder.setTexture(heightField.textures.normal, index: 1)
     computeEncoder.setTexture(heightField.textures.terrain, index: 2)
+    computeEncoder.setTexture(heightField.textures.velocity, index: 3)
+    computeEncoder.setTexture(heightField.textures.flux, index: 4)
+    computeEncoder.setTexture(heightField.textures.sediment, index: 5)
+    computeEncoder.setTexture(heightField.textures.slipperage, index: 6)
+    computeEncoder.setTexture(heightField.textures.slipperageFlux, index: 7)
     computeEncoder.setBuffer(scene_displaced.mesh.vertexBuffers.first!.buffer, offset: 0, index: 1)
     computeEncoder.setBuffer(scene_displaced.mesh.submeshes.first!.indexBuffer.buffer, offset: 0, index: 2)
     computeEncoder.setBuffer(raytracingUniformsBuffer, offset: 0, index: 3)
@@ -352,6 +364,11 @@ class Renderer: MTKViewDelegate {
     renderEncoder.setFragmentBuffer(raytracingUniformsBuffer, offset: 0, index: 0)
     renderEncoder.setFragmentTexture(heightField.textures.normal, index: 0)
     renderEncoder.setFragmentTexture(heightField.textures.terrain, index: 1)
+    renderEncoder.setFragmentTexture(heightField.textures.velocity, index: 2)
+    renderEncoder.setFragmentTexture(heightField.textures.flux, index: 3)
+    renderEncoder.setFragmentTexture(heightField.textures.sediment, index: 4)
+    renderEncoder.setFragmentTexture(heightField.textures.slipperage, index: 5)
+    renderEncoder.setFragmentTexture(heightField.textures.slipperageFlux, index: 6)
     
     if let submesh = scene_displaced.mesh.submeshes.first {
       renderEncoder.drawIndexedPrimitives(type: submesh.primitiveType,

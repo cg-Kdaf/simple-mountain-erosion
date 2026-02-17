@@ -36,6 +36,9 @@ typedef enum {
   Terrain,
   Flux,
   Normal,
+  Slipperage,
+  Sediment,
+  SlipperageFlux,
 } TextureOverlay;
 
 typedef struct {

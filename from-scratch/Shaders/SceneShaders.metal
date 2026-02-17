@@ -15,11 +15,11 @@ inline ray generateCameraRay(uint2 gid, uint2 viewportSize, CameraProperties cam
   // 1. Map pixel center to NDC [-1, 1]
   float2 uv = (float2(gid) + 0.5) / float2(viewportSize);
   float2 ndc = uv * 2.0 - 1.0;
-
+  
   // 2. Calculate the size of the view plane based on FOV
   // tan(fov/2) gives us the height of the image plane at 1 unit distance
   float tanHalfFov = tan(camera.fovYRadians * 0.5);
-
+  
   // 3. Calculate offsets on the image plane
   // Scale X by aspect ratio to prevent distortion
   float screenX = ndc.x * camera.aspect * tanHalfFov;
@@ -27,16 +27,16 @@ inline ray generateCameraRay(uint2 gid, uint2 viewportSize, CameraProperties cam
   // Invert Y because screen coordinates (Y+) usually point down,
   // while world space Up (Y+) points up.
   float screenY = -ndc.y * tanHalfFov;
-
+  
   // 4. Construct direction: Forward + projected offsets on Right and Up vectors
   float3 dir = normalize(camera.forward + (camera.right * screenX) + (camera.up * screenY));
-
+  
   // 5. Origin is the camera position
   float3 origin = camera.position;
-
+  
   constexpr float tMin = 0.0;
   constexpr float tMax = 1e6;
-
+  
   return ray(origin, dir, tMin, tMax);
 }
 
@@ -57,21 +57,20 @@ struct Vertex {
   float2 uv;
 };
 
-kernel void compute_vertices(
-    device const Vertex* inVertices [[buffer(0)]],
-    device Vertex* outVertices [[buffer(1)]],
-    constant uint& vertexCount [[buffer(2)]],
-    constant float& meshSize [[buffer(3)]],
-    texture2d<float, access::read> heightTex [[texture(0)]],
-    uint id [[thread_position_in_grid]])
+kernel void compute_vertices(device const Vertex* inVertices [[buffer(0)]],
+                             device Vertex* outVertices [[buffer(1)]],
+                             constant uint& vertexCount [[buffer(2)]],
+                             constant float& meshSize [[buffer(3)]],
+                             texture2d<float, access::read> heightTex [[texture(0)]],
+                             uint id [[thread_position_in_grid]])
 {
   if (id >= vertexCount) { return; }
   
   Vertex v = inVertices[id];
   
   float4 terrain = heightTex.read(uint2(v.uv * float2(heightTex.get_width(),
-                                                    heightTex.get_height()) - float2(0.5)));
-
+                                                      heightTex.get_height()) - float2(0.5)));
+  
   outVertices[id].position.y = v.position.y + getWholeHeight(terrain);
   outVertices[id].position.xz = v.position.xz * meshSize;
 }
@@ -79,6 +78,11 @@ kernel void compute_vertices(
 kernel void compute_main(texture2d<float, access::write> outTexture [[texture(0)]],
                          texture2d<float, access::sample> normalTex [[texture(1)]],
                          texture2d<float, access::sample> colorTex [[texture(2)]],
+                         texture2d<float, access::sample> velocityTex [[texture(3)]],
+                         texture2d<float, access::sample> fluxTex [[texture(4)]],
+                         texture2d<float, access::sample> sedimentTex [[texture(5)]],
+                         texture2d<float, access::sample> slipperageTex [[texture(6)]],
+                         texture2d<float, access::sample> slipperageFluxTex [[texture(7)]],
                          uint2 gid [[thread_position_in_grid]],
                          metal::raytracing::primitive_acceleration_structure accelerationStructure [[buffer(0)]],
                          device const Vertex* vertices [[buffer(1)]],
@@ -87,33 +91,68 @@ kernel void compute_main(texture2d<float, access::write> outTexture [[texture(0)
 {
   uint2 size = uint2(outTexture.get_width(), outTexture.get_height());
   if (gid.x >= size.x || gid.y >= size.y) { return; }
-
+  
   // Generate camera ray
   ray r = generateCameraRay(gid, size, rtUniforms.camera);
-
+  
   // Intersect with the acceleration structure
   intersector<triangle_data> intersector;
   intersection_result<triangle_data> intersection = intersector.intersect(r, accelerationStructure);
-
+  
   // Default background (sky-like gradient)
   float2 uv = float2(gid) / float2(size);
   float3 color = mix(float3(0.6, 0.8, 1.0), float3(0.1, 0.2, 0.4), uv.y);
-
-  if (intersection.distance > 0.0) {
+  
+  // Debug texture visualization
+  constexpr sampler texSampler(coord::normalized, address::clamp_to_edge, filter::linear);
+  
+  if (rtUniforms.overlayDebug == 1) {
+    // Velocity debug
+    float4 vel = velocityTex.sample(texSampler, uv);
+    float mag = length(vel.xy);
+    color = float3(mag * 2.0, abs(vel.x) * 2.0, abs(vel.y) * 2.0);
+  } else if (rtUniforms.overlayDebug == 2) {
+    // Terrain debug (height and water)
+    float4 terrain = colorTex.sample(texSampler, uv);
+    color = float3(terrain.r * 0.1, terrain.g * 0.5, 0.0) + float3(0.5);
+  } else if (rtUniforms.overlayDebug == 3) {
+    // Flux debug
+    float4 flux = fluxTex.sample(texSampler, uv);
+    float mag = length(flux.xyzw);
+    color = float3(mag * 0.5, flux.x * 0.5 + 0.5, flux.y * 0.5 + 0.5);
+  } else if (rtUniforms.overlayDebug == 4) {
+    // Normal debug
+    float3 N = normalize(normalTex.sample(texSampler, uv).xyz);
+    color = N * 0.5 + 0.5;
+  } else if (rtUniforms.overlayDebug == 5) {
+    // Slipperage debug
+    float4 slip = slipperageTex.sample(texSampler, uv);
+    color = float3(slip.r, slip.r * 0.7, 0.0);
+  } else if (rtUniforms.overlayDebug == 6) {
+    // Sediment debug
+    float4 sed = sedimentTex.sample(texSampler, uv);
+    color = float3(sed.r, sed.r * 0.5, 0.0);
+  } else if (rtUniforms.overlayDebug == 7) {
+    // Slipperage flux debug
+    float4 sFlux = slipperageFluxTex.sample(texSampler, uv);
+    float mag = length(sFlux.xyzw);
+    color = float3(mag * 0.3, sFlux.x * 0.5 + 0.5, sFlux.z * 0.5 + 0.5);
+  } else if (intersection.distance > 0.0) {
+    // Default: normal shading with ray tracing
     uint triID = intersection.primitive_id;
     uint i0 = indices[triID * 3 + 0];
     uint i1 = indices[triID * 3 + 1];
     uint i2 = indices[triID * 3 + 2];
     
     float2 bc = intersection.triangle_barycentric_coord;
-
+    
     // Interpolate UVs to sample normal texture
     float w0 = 1.0 - bc.x - bc.y;
     float2 uv0 = vertices[i0].uv;
     float2 uv1 = vertices[i1].uv;
     float2 uv2 = vertices[i2].uv;
     float2 interpUV = uv0 * w0 + uv1 * bc.x + uv2 * bc.y;
-
+    
     // Sample normal
     constexpr sampler normalSampler(coord::normalized, address::clamp_to_edge, filter::linear);
     float3 N = normalize(normalTex.sample(normalSampler, interpUV).xyz);
@@ -121,26 +160,26 @@ kernel void compute_main(texture2d<float, access::write> outTexture [[texture(0)
     // Simple Lambert shading
     float3 L = normalize(float3(0.5, 0.8, 0.6)); // fixed light direction
     float3 V = normalize(-r.direction);          // view direction
-
+    
     float ambient = 0.1;
     float ndotl = max(dot(N, L), 0.0);
-
+    
     // Shadow ray toward the light. If blocked, kill direct light.
     float3 hitPoint = r.origin + r.direction * intersection.distance;
     bool occluded = traceShadow(intersector, accelerationStructure, hitPoint, L, 1e6);
     float shadow = occluded ? 0.0 : 1.0;
-
+    
     // Simple albedo to make it visible
     constexpr sampler colorSampler(coord::normalized, address::clamp_to_edge, filter::linear);
     float4 colored = colorTex.sample(colorSampler, interpUV);
     float3 albedo = float3(0.75, 0.65, 0.55);
     albedo = float3(0.0, 0.0, 1.0) * colored.g + (1.0 - colored.g) * albedo;
-
+    
     // Optional: face orientation fix (avoid backface darkening if desired)
     // if (dot(N, V) < 0.0) N = -N;
-
+    
     float3 shaded = albedo * (ambient + ndotl * shadow);
-
+    
     // Optional: small rim light for nicer look
     float rim = pow(clamp(1.0 - max(dot(N, V), 0.0), 0.0, 1.0), 2.0) * 0.05;
     shaded += rim;
@@ -148,8 +187,7 @@ kernel void compute_main(texture2d<float, access::write> outTexture [[texture(0)
     color = clamp(shaded, 0.0, 1.0);
   }
   
-
-  outTexture.write(float4(color, 1.0), gid);
+  outTexture.write(float4(clamp(color, 0.0, 1.0), 1.0), gid);
 }
 
 struct RasterizerData {
@@ -163,16 +201,16 @@ inline float4 projectWorldPosition(float3 worldPos, CameraProperties camera) {
   float viewX = dot(rel, camera.right);
   float viewY = dot(rel, camera.up);
   float viewZ = dot(rel, camera.forward);
-
+  
   float tanHalfFov = tan(camera.fovYRadians * 0.5);
   float yScale = 1.0 / tanHalfFov;
   float xScale = yScale / camera.aspect;
-
+  
   constexpr float nearPlane = 0.1;
   constexpr float farPlane = 1000.0;
   float zScale = farPlane / (farPlane - nearPlane);
   float zOffset = (-nearPlane * farPlane) / (farPlane - nearPlane);
-
+  
   float4 clip;
   clip.x = viewX * xScale;
   clip.y = viewY * yScale;
@@ -205,26 +243,73 @@ vertex RasterizerData vertexShader(uint vertexID [[vertex_id]],
 fragment float4 fragmentShader(RasterizerData in [[stage_in]],
                                texture2d<float, access::sample> normalTex [[texture(0)]],
                                texture2d<float, access::sample> terrainTex [[texture(1)]],
+                               texture2d<float, access::sample> velocityTex [[texture(2)]],
+                               texture2d<float, access::sample> fluxTex [[texture(3)]],
+                               texture2d<float, access::sample> sedimentTex [[texture(4)]],
+                               texture2d<float, access::sample> slipperageTex [[texture(5)]],
+                               texture2d<float, access::sample> slipperageFluxTex [[texture(6)]],
                                constant RayTracingUniforms &rtUniforms [[buffer(0)]]) {
   constexpr sampler normalSampler(coord::normalized, address::clamp_to_edge, filter::linear);
   float2 uv = clamp(in.uv, float2(0.0), float2(1.0));
+  
+  // Debug texture visualization based on overlayDebug mode
+  if (rtUniforms.overlayDebug == 1) {
+    // Velocity debug
+    float4 vel = velocityTex.sample(normalSampler, uv);
+    float mag = length(vel.xy);
+    float3 col = float3(mag * 2.0, abs(vel.x) * 2.0, abs(vel.y) * 2.0);
+    return float4(clamp(col, 0.0, 1.0), 1.0);
+  } else if (rtUniforms.overlayDebug == 2) {
+    // Terrain debug (height and water)
+    float4 terrain = terrainTex.sample(normalSampler, uv);
+    float3 col = float3(terrain.r * 0.1, terrain.g * 0.5, 0.0) + float3(0.5);
+    return float4(clamp(col, 0.0, 1.0), 1.0);
+  } else if (rtUniforms.overlayDebug == 3) {
+    // Flux debug
+    float4 flux = fluxTex.sample(normalSampler, uv);
+    float mag = length(flux.xyzw);
+    float3 col = float3(mag * 0.5, flux.x * 0.5 + 0.5, flux.y * 0.5 + 0.5);
+    return float4(clamp(col, 0.0, 1.0), 1.0);
+  } else if (rtUniforms.overlayDebug == 4) {
+    // Normal debug
+    float3 N = normalize(normalTex.sample(normalSampler, uv).xyz);
+    return float4(N * 0.5 + 0.5, 1.0);
+  } else if (rtUniforms.overlayDebug == 5) {
+    // Slipperage debug
+    float4 slip = slipperageTex.sample(normalSampler, uv);
+    float3 col = float3(slip.r, slip.r * 0.7, 0.0);
+    return float4(clamp(col, 0.0, 1.0), 1.0);
+  } else if (rtUniforms.overlayDebug == 6) {
+    // Sediment debug
+    float4 sed = sedimentTex.sample(normalSampler, uv);
+    float3 col = float3(sed.r, sed.r * 0.5, 0.0);
+    return float4(clamp(col, 0.0, 1.0), 1.0);
+  } else if (rtUniforms.overlayDebug == 7) {
+    // Slipperage flux debug
+    float4 sFlux = slipperageFluxTex.sample(normalSampler, uv);
+    float mag = length(sFlux.xyzw);
+    float3 col = float3(mag * 0.3, sFlux.x * 0.5 + 0.5, sFlux.z * 0.5 + 0.5);
+    return float4(clamp(col, 0.0, 1.0), 1.0);
+  }
+  
+  // Default: normal shading (overlayDebug == 0)
   float3 N = normalize(normalTex.sample(normalSampler, uv).xyz);
-
+  
   float3 L = normalize(float3(0.5, 0.8, 0.6));
   float3 V = normalize(rtUniforms.camera.position - in.worldPos);
-
+  
   float ambient = 0.1;
   float ndotl = max(dot(N, L), 0.0);
-
+  
   constexpr sampler terrainSampler(coord::normalized, address::clamp_to_edge, filter::linear);
   float4 terrain = terrainTex.sample(terrainSampler, uv);
   float3 baseAlbedo = float3(0.75, 0.65, 0.55);
   float3 albedo = float3(0.0, 0.0, 1.0) * terrain.g + (1.0 - terrain.g) * baseAlbedo;
-
+  
   float3 shaded = albedo * (ambient + ndotl);
   float rim = pow(clamp(1.0 - max(dot(N, V), 0.0), 0.0, 1.0), 2.0) * 0.05;
   shaded += rim;
-
+  
   return float4(clamp(shaded, 0.0, 1.0), 1.0);
 }
 

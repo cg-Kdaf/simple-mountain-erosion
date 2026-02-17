@@ -2,7 +2,7 @@
 //  AccelerationStructureBuilder.swift
 //  YourProjectName
 //
-//  Created by YourName on 2025-12-31.
+//  Created by Colin Marmond on 2026-02-05.
 //
 
 import MetalKit
