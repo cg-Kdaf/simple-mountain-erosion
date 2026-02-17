@@ -9,21 +9,20 @@
 #include "../CommonShaders.h"
 using namespace metal;
 
-kernel void add_rain(
-    texture2d<float, access::read> terrainRead [[texture(0)]],
-    texture2d<float, access::write> terrainWrite [[texture(1)]],
-    constant HeightMapUniforms& hmU [[buffer(0)]],
-    uint2 gid [[thread_position_in_grid]])
+kernel void add_rain(texture2d<float, access::read> terrainRead [[texture(0)]],
+                     texture2d<float, access::write> terrainWrite [[texture(1)]],
+                     constant HeightMapUniforms& hmU [[buffer(0)]],
+                     uint2 gid [[thread_position_in_grid]])
 {
-    if (gid.x >= terrainRead.get_width() || gid.y >= terrainRead.get_height()) return;
-
-    float4 state = terrainRead.read(gid);
-    // R=Bedrock, G=Regolith, B=Water, A=Sediment
-    
-    // Add simple uniform rain. In a real app, use a noise texture here.
-    float rain_amount = 0.0;
-    
-    state.b += rain_amount * hmU.dt;
-    
-    terrainWrite.write(state, gid);
+  if (gid.x >= terrainRead.get_width() || gid.y >= terrainRead.get_height()) return;
+  
+  float4 state = terrainRead.read(gid);
+  // R=Bedrock, G=Regolith, B=Water, A=Sediment
+  
+  // Add simple uniform rain. In a real app, use a noise texture here.
+  float rain_amount = 0.0;
+  
+  state.b += rain_amount * hmU.dt;
+  
+  terrainWrite.write(state, gid);
 }

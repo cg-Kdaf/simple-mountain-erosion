@@ -78,9 +78,13 @@ extension HeightMapUniforms: Equatable {
                lhs.A_pipe == rhs.A_pipe &&
                lhs.Kc == rhs.Kc &&
                lhs.Ks == rhs.Ks &&
-               lhs.Kb == rhs.Kb &&
                lhs.Kd == rhs.Kd &&
-               lhs.Ke == rhs.Ke
+               lhs.Ke == rhs.Ke &&
+               lhs.talusScale == rhs.talusScale &&
+               lhs.thermalStrength == rhs.thermalStrength &&
+               lhs.advectMultiplier == rhs.advectMultiplier &&
+               lhs.velAdvMag == rhs.velAdvMag &&
+               lhs.velMult == rhs.velMult
     }
 }
 
@@ -143,14 +147,19 @@ struct ContentView: View {
                                                                   A_pipe: 1.0,
                                                                   Kc: 0.5,
                                                                   Ks: 0.1,
-                                                                  Kb: 0.001,
                                                                   Kd: 0.1,
-                                                                  Ke: 0.015)
+                                                                  Ke: 0.015,
+                                                                  talusScale: 2.0,
+                                                                  thermalStrength: 0.5,
+                                                                  advectMultiplier: 1.0,
+                                                                  velAdvMag: 0.1,
+                                                                  velMult: 0.5)
   @State private var autoTimer = Timer.publish(every: 1.0/60.0, on: .main, in: .common).autoconnect()
   @State private var expandedStats: Bool = false
   @State private var expandedLiveControls: Bool = false
   @State private var expandedErosion: Bool = false
   @State private var expandedHeightMap: Bool = false
+  @State private var simulationPaused: Bool = false
 
   var body: some View {
     NavigationStack {
@@ -233,69 +242,109 @@ struct ContentView: View {
             
             CollapsibleSection(title: "Erosion Controls", icon: "water.waves.and.arrow.down", isExpanded: $expandedErosion) {
               VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                  Toggle(simulationPaused ? "Resume Simulation" : "Pause Simulation", isOn: $simulationPaused)
+                    .toggleStyle(.button)
+                    .controlSize(.small)
+                    .buttonStyle(.borderedProminent)
+                    .tint(simulationPaused ? .green : .orange)
+                    .onChange(of: simulationPaused) { _, newValue in
+                      renderer?.setSimulationPaused(newValue)
+                    }
+                }
+                .padding(.bottom, 4)
+                
                 VStack(alignment: .leading, spacing: 4) {
                   HStack {
-                    Text("Time step (dt)").font(.caption2)
-                    Spacer()
+                    Slider(value: $heightMapUniforms.dt, in: 0.001...0.1, label: {
+                      Text("Time step (dt)").font(.caption2)
+                    })
                     Text(String(format: "%.4f", heightMapUniforms.dt)).monospacedDigit().font(.caption2)
                   }
-                  Slider(value: $heightMapUniforms.dt, in: 0.001...0.1)
                   
                   HStack {
-                    Text("Pipe length (l_pipe)").font(.caption2)
-                    Spacer()
+                    Slider(value: $heightMapUniforms.l_pipe, in: 0.05...2.0, label: {
+                      Text("Pipe length (l_pipe)").font(.caption2)
+                    })
                     Text(String(format: "%.3f", heightMapUniforms.l_pipe)).monospacedDigit().font(.caption2)
                   }
-                  Slider(value: $heightMapUniforms.l_pipe, in: 0.05...2.0)
                   
                   HStack {
-                    Text("Gravity").font(.caption2)
-                    Spacer()
+                    Slider(value: $heightMapUniforms.gravity, in: 0.0...20.0, label: {
+                      Text("Gravity").font(.caption2)
+                    })
                     Text(String(format: "%.2f", heightMapUniforms.gravity)).monospacedDigit().font(.caption2)
                   }
-                  Slider(value: $heightMapUniforms.gravity, in: 0.0...20.0)
                   
                   HStack {
-                    Text("Pipe area (A_pipe)").font(.caption2)
-                    Spacer()
+                    Slider(value: $heightMapUniforms.A_pipe, in: 0.1...5.0, label: {
+                      Text("Pipe area (A_pipe)").font(.caption2)
+                    })
                     Text(String(format: "%.3f", heightMapUniforms.A_pipe)).monospacedDigit().font(.caption2)
                   }
-                  Slider(value: $heightMapUniforms.A_pipe, in: 0.1...5.0)
                   
                   HStack {
-                    Text("Capacity (Kc)").font(.caption2)
-                    Spacer()
+                    Slider(value: $heightMapUniforms.Kc, in: 0.0...2.0, label: {
+                      Text("Capacity (Kc)").font(.caption2)
+                    })
                     Text(String(format: "%.3f", heightMapUniforms.Kc)).monospacedDigit().font(.caption2)
                   }
-                  Slider(value: $heightMapUniforms.Kc, in: 0.0...2.0)
                   
                   HStack {
-                    Text("Dissolving regolith (Ks)").font(.caption2)
-                    Spacer()
+                    Slider(value: $heightMapUniforms.Ks, in: 0.0...1.0, label: {
+                      Text("Dissolving regolith (Ks)").font(.caption2)
+                    })
                     Text(String(format: "%.3f", heightMapUniforms.Ks)).monospacedDigit().font(.caption2)
                   }
-                  Slider(value: $heightMapUniforms.Ks, in: 0.0...1.0)
                   
                   HStack {
-                    Text("Dissolving bedrock (Kb)").font(.caption2)
-                    Spacer()
-                    Text(String(format: "%.4f", heightMapUniforms.Kb)).monospacedDigit().font(.caption2)
-                  }
-                  Slider(value: $heightMapUniforms.Kb, in: 0.0...0.1)
-                  
-                  HStack {
-                    Text("Deposition (Kd)").font(.caption2)
-                    Spacer()
+                    Slider(value: $heightMapUniforms.Kd, in: 0.0...1.0, label: {
+                      Text("Deposition (Kd)").font(.caption2)
+                    })
                     Text(String(format: "%.3f", heightMapUniforms.Kd)).monospacedDigit().font(.caption2)
                   }
-                  Slider(value: $heightMapUniforms.Kd, in: 0.0...1.0)
                   
                   HStack {
-                    Text("Evaporation (Ke)").font(.caption2)
-                    Spacer()
+                    Slider(value: $heightMapUniforms.Ke, in: 0.0...0.1, label: {
+                      Text("Evaporation (Ke)").font(.caption2)
+                    })
                     Text(String(format: "%.4f", heightMapUniforms.Ke)).monospacedDigit().font(.caption2)
                   }
-                  Slider(value: $heightMapUniforms.Ke, in: 0.0...0.1)
+                  
+                  HStack {
+                    Slider(value: $heightMapUniforms.talusScale, in: 0.0...10.0, label: {
+                      Text("Talus scale").font(.caption2)
+                    })
+                    Text(String(format: "%.2f", heightMapUniforms.talusScale)).monospacedDigit().font(.caption2)
+                  }
+                  
+                  HStack {
+                    Slider(value: $heightMapUniforms.thermalStrength, in: 0.0...2.0, label: {
+                      Text("Thermal strength").font(.caption2)
+                    })
+                    Text(String(format: "%.3f", heightMapUniforms.thermalStrength)).monospacedDigit().font(.caption2)
+                  }
+                  
+                  HStack {
+                    Slider(value: $heightMapUniforms.advectMultiplier, in: 0.1...5.0, label: {
+                      Text("Advection multiplier").font(.caption2)
+                    })
+                    Text(String(format: "%.2f", heightMapUniforms.advectMultiplier)).monospacedDigit().font(.caption2)
+                  }
+                  
+                  HStack {
+                    Slider(value: $heightMapUniforms.velAdvMag, in: 0.0...1.0, label: {
+                      Text("Velocity advection mag").font(.caption2)
+                    })
+                    Text(String(format: "%.3f", heightMapUniforms.velAdvMag)).monospacedDigit().font(.caption2)
+                  }
+                  
+                  HStack {
+                    Slider(value: $heightMapUniforms.velMult, in: 0.1...5.0, label: {
+                      Text("Velocity multiplier").font(.caption2)
+                    })
+                    Text(String(format: "%.3f", heightMapUniforms.velMult)).monospacedDigit().font(.caption2)
+                  }
                 }
                 
                 Button("Reset Defaults") {
@@ -401,9 +450,13 @@ struct ContentView: View {
       A_pipe: 1.0,
       Kc: 0.5,
       Ks: 0.1,
-      Kb: 0.001,
       Kd: 0.1,
-      Ke: 0.015
+      Ke: 0.015,
+      talusScale: 2.0,
+      thermalStrength: 0.5,
+      advectMultiplier: 1.0,
+      velAdvMag: 0.1,
+      velMult: 0.5
     )
     renderer?.updateErosionUniform(heightMapUniforms)
   }

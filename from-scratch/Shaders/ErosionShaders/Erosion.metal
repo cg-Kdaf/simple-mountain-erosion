@@ -1,0 +1,316 @@
+//
+//  Erosion.metal
+//  from-scratch
+//
+//  Created by Colin Marmond on 16/02/2026.
+//
+
+#include <metal_stdlib>
+#include "../CommonShaders.h"
+using namespace metal;
+
+constexpr sampler textureSampler (mag_filter::linear,
+                                  min_filter::linear);
+
+kernel void advection_compute(texture2d<float, access::read> velocity_in [[texture(0)]],
+                              texture2d<float, access::sample> sediment_in [[texture(1)]],
+                              texture2d<float, access::write> sediment_out [[texture(2)]],
+                              constant HeightMapUniforms& u [[buffer(0)]],
+                              uint2 gid [[thread_position_in_grid]])
+{
+  if (gid.x >= sediment_out.get_width() || gid.y >= sediment_out.get_height()) return;
+  
+  float4 curvel = velocity_in.read(gid);
+  float4 useVel = curvel * u.advectMultiplier * 0.5;
+  
+  float2 coo = float2(gid);
+  float2 oldloc = float2(coo.x - useVel.x * u.dt, coo.y - useVel.y * u.dt);
+  
+  float oldsedi = sediment_in.sample(textureSampler, oldloc).x;
+  
+  sediment_out.write(float4(oldsedi, 0.0, 0.0, 1.0), gid);
+}
+
+kernel void flow_compute(texture2d<float, access::read> terrain_in [[texture(0)]],
+                         texture2d<float, access::read> flux_in [[texture(1)]],
+                         texture2d<float, access::write> flux_out [[texture(2)]],
+                         constant HeightMapUniforms& u [[buffer(0)]],
+                         uint2 gid [[thread_position_in_grid]])
+{
+  if (gid.x >= flux_out.get_width() || gid.y >= flux_out.get_height()) return;
+  
+  int2 coo = int2(gid);
+  float g = 0.80;
+  
+  // Load neighbors (Terrain: x=height, y=water)
+  float4 top    = read_tex(terrain_in, coo + int2(0, 1));
+  float4 right  = read_tex(terrain_in, coo + int2(1, 0));
+  float4 bottom = read_tex(terrain_in, coo + int2(0,-1));
+  float4 left   = read_tex(terrain_in, coo + int2(-1,0));
+  
+  float damping = 1.0;
+  float4 curTerrain = terrain_in.read(gid);
+  float4 curFlux = flux_in.read(gid) * damping;
+  
+  float height_water = curTerrain.y + curTerrain.x;
+  
+  // Hydrostatic pressure differences
+  float Htopout    = height_water - (top.y + top.x);
+  float Hrightout  = height_water - (right.y + right.x);
+  float Hbottomout = height_water - (bottom.x + bottom.y); // Note: bottom.x + bottom.y order swap in GLSL
+  float Hleftout   = height_water - (left.y + left.x);
+  
+  float constant_val = u.dt * g * u.A_pipe / u.l_pipe;
+  
+  // Flux Map R: left, G: right, B: top, A: bottom
+  float fleftout   = max(0.0, curFlux.x + constant_val * Hleftout);
+  float frightout  = max(0.0, curFlux.y + constant_val * Hrightout);
+  float ftopout    = max(0.0, curFlux.z + constant_val * Htopout);
+  float fbottomout = max(0.0, curFlux.w + constant_val * Hbottomout);
+  
+  float waterOut = u.dt * (fleftout + frightout + ftopout + fbottomout);
+  
+  // Scaling to prevent negative water volume
+  float k = min(1.0, (curTerrain.y * u.l_pipe * u.l_pipe) / (waterOut + 1e-6)); // Added epsilon to avoid div/0
+  
+  fleftout   *= k;
+  frightout  *= k;
+  ftopout    *= k;
+  fbottomout *= k;
+  
+  // Boundary conditions
+  if (coo.x <= 1) fleftout = 0.0;
+  else if (coo.x >= (int(terrain_in.get_width()) - 1)) frightout = 0.0;
+  
+  if (coo.y <= 1) fbottomout = 0.0;
+  else if (coo.y >= (int(terrain_in.get_height()) - 1)) ftopout = 0.0;
+  
+  flux_out.write(float4(fleftout, frightout, ftopout, fbottomout), gid);
+}
+
+kernel void sediment_compute(texture2d<float, access::read> terrain_in [[texture(0)]],
+                             texture2d<float, access::write> terrain_out [[texture(1)]],
+                             texture2d<float, access::read> sediment_in [[texture(2)]],
+                             texture2d<float, access::write> sediment_out [[texture(3)]],
+                             texture2d<float, access::read> velocity_in [[texture(4)]],
+                             texture2d<float, access::read> normal_in [[texture(5)]],
+                             constant HeightMapUniforms& u [[buffer(0)]],
+                             uint2 gid [[thread_position_in_grid]])
+{
+  if (gid.x >= terrain_out.get_width() || gid.y >= terrain_out.get_height()) return;
+  
+  int2 coo = int2(gid);
+  float3 nor = read_tex(normal_in, coo).xyz;
+  float slope = max(0.1, sqrt(1.0 - nor.y * nor.y));
+  
+  float4 curvel = velocity_in.read(gid);
+  float4 curSediment = sediment_in.read(gid);
+  float4 curTerrain = terrain_in.read(gid);
+  
+  float velo = length(curvel.xy);
+  float sedicap = u.Kc * slope * velo;
+  
+  float cursedi = curSediment.x;
+  float height = curTerrain.x;
+  float outsedi = curSediment.x;
+  
+  if (sedicap > cursedi) {
+    float changesedi = (sedicap - cursedi) * u.Ks;
+    height -= changesedi;
+    outsedi += changesedi;
+  } else {
+    float changesedi = (cursedi - sedicap) * u.Kd;
+    height += changesedi;
+    outsedi -= changesedi;
+  }
+  
+  sediment_out.write(float4(outsedi, 0.0, 0.0, 1.0), gid);
+  terrain_out.write(float4(height, curTerrain.y, curTerrain.z, curTerrain.w), gid);
+}
+
+kernel void slipperage_compute(texture2d<float, access::read> terrain_in [[texture(0)]],
+                               texture2d<float, access::write> slipperage_out [[texture(1)]],
+                               constant HeightMapUniforms& u [[buffer(0)]],
+                               uint2 gid [[thread_position_in_grid]])
+{
+  if (gid.x >= slipperage_out.get_width() || gid.y >= slipperage_out.get_height()) return;
+  
+  int2 coo = int2(gid);
+  int w = terrain_in.get_width();
+  int h = terrain_in.get_height();
+  
+  float r = read_tex(terrain_in, coo + int2(1, 0)).x;
+  float t = read_tex(terrain_in, coo + int2(0, 1)).x;
+  float b = read_tex(terrain_in, coo + int2(0,-1)).x;
+  float l = read_tex(terrain_in, coo + int2(-1,0)).x;
+  float terraincur = terrain_in.read(gid).x;
+  
+  if (coo.x <= 1) l = terraincur;
+  else if (coo.x >= (w - 1)) r = terraincur;
+  
+  if (coo.y <= 1) b = terraincur;
+  else if (coo.y >= (h - 1)) t = terraincur;
+  
+  float maxLocalDiff = u.talusScale * 0.01;
+  float avgDiff = (r + t + b + l) * 0.25 - terraincur;
+  avgDiff = 10.0 * max(abs(avgDiff) - maxLocalDiff, 0.0);
+  
+  float4 slipperage = float4(max(u.talusScale - avgDiff, 0.0), 0.0, 0.0, 1.0);
+  slipperage_out.write(slipperage, gid);
+}
+
+kernel void thermal_apply_compute(texture2d<float, access::read> terrain_in [[texture(0)]],
+                                  texture2d<float, access::write> terrain_out [[texture(1)]],
+                                  texture2d<float, access::read> terrain_flux_in [[texture(2)]],
+                                  constant HeightMapUniforms& u [[buffer(0)]],
+                                  uint2 gid [[thread_position_in_grid]])
+{
+  if (gid.x >= terrain_out.get_width() || gid.y >= terrain_out.get_height()) return;
+  
+  int2 coo = int2(gid);
+  
+  float4 topflux    = read_tex(terrain_flux_in, coo + int2(0, 1));
+  float4 rightflux  = read_tex(terrain_flux_in, coo + int2(1, 0));
+  float4 bottomflux = read_tex(terrain_flux_in, coo + int2(0,-1));
+  float4 leftflux   = read_tex(terrain_flux_in, coo + int2(-1,0));
+  
+  // Extract inflows: top.A (its bottom flux), right.R (its left flux), bottom.B (its top flux), left.G (its right flux)
+  float4 inputflux = float4(topflux.w, rightflux.x, bottomflux.z, leftflux.y);
+  float4 curflux = terrain_flux_in.read(gid);
+  
+  float vol = inputflux.x + inputflux.y + inputflux.z + inputflux.w -
+  (curflux.x + curflux.y + curflux.z + curflux.w);
+  
+  float tdelta = min(100.0, u.dt * u.thermalStrength) * vol;
+  float4 curTerrain = terrain_in.read(gid);
+  
+  float4 terrain = float4(curTerrain.x + tdelta, curTerrain.y, curTerrain.z, curTerrain.w);
+  terrain_out.write(terrain, gid);
+}
+
+kernel void thermal_flux_compute(texture2d<float, access::read> terrain_in [[texture(0)]],
+                                 texture2d<float, access::read> slipperage_in [[texture(1)]],
+                                 texture2d<float, access::write> terrain_flux_out [[texture(2)]],
+                                 constant HeightMapUniforms& u [[buffer(0)]],
+                                 uint2 gid [[thread_position_in_grid]])
+{
+  if (gid.x >= terrain_flux_out.get_width() || gid.y >= terrain_flux_out.get_height()) return;
+  
+  int2 coo = int2(gid);
+  int w = terrain_in.get_width();
+  int h = terrain_in.get_height();
+  
+  float terraintop    = read_tex(terrain_in, coo + int2(0, 1)).x;
+  float terrainright  = read_tex(terrain_in, coo + int2(1, 0)).x;
+  float terrainbottom = read_tex(terrain_in, coo + int2(0,-1)).x;
+  float terrainleft   = read_tex(terrain_in, coo + int2(-1,0)).x;
+  float terraincur    = terrain_in.read(gid).x;
+  
+  if (coo.x <= 1) terrainleft = terraincur;
+  else if (coo.x >= (w - 1)) terrainright = terraincur;
+  
+  if (coo.y <= 1) terrainbottom = terraincur;
+  else if (coo.y >= (h - 1)) terraintop = terraincur;
+  
+  float slippagetop    = read_tex(slipperage_in, coo + int2(0, 1)).x;
+  float slippageright  = read_tex(slipperage_in, coo + int2(1, 0)).x;
+  float slippagebottom = read_tex(slipperage_in, coo + int2(0,-1)).x;
+  float slippageleft   = read_tex(slipperage_in, coo + int2(-1,0)).x;
+  float slippagecur    = slipperage_in.read(gid).x;
+  
+  float4 diff;
+  diff.x = terraincur - terraintop - (slippagecur + slippagetop) * 0.5;
+  diff.y = terraincur - terrainright - (slippagecur + slippageright) * 0.5;
+  diff.z = terraincur - terrainbottom - (slippagecur + slippagebottom) * 0.5;
+  diff.w = terraincur - terrainleft - (slippagecur + slippageleft) * 0.5;
+  
+  diff = max(float4(0.0), diff);
+  float4 newFlow = diff * 1.2;
+  
+  float outfactor = (newFlow.x + newFlow.y + newFlow.z + newFlow.w) * u.dt;
+  if (outfactor > 1e-5) {
+    outfactor = min(1.0, terraincur / outfactor);
+    newFlow *= outfactor;
+  }
+  
+  terrain_flux_out.write(newFlow, gid);
+}
+
+kernel void waterheight_compute(texture2d<float, access::read> terrain_in [[texture(0)]],
+                                texture2d<float, access::write> terrain_out [[texture(1)]],
+                                texture2d<float, access::read> flux_in [[texture(2)]],
+                                texture2d<float, access::read> velocity_in [[texture(3)]],
+                                texture2d<float, access::write> velocity_out [[texture(4)]],
+                                constant HeightMapUniforms& u [[buffer(0)]],
+                                uint2 gid [[thread_position_in_grid]])
+{
+  if (gid.x >= terrain_out.get_width() || gid.y >= terrain_out.get_height()) return;
+  
+  int2 coo = int2(gid);
+  uint w = terrain_in.get_width();
+  uint h = terrain_in.get_height();
+  
+  // Flux Map R: left, G: right, B: top, A: bottom
+  float4 curflux    = flux_in.read(gid);
+  float4 cur        = terrain_in.read(gid);
+  float4 curvel     = velocity_in.read(gid);
+  
+  float4 topflux    = read_tex(flux_in, coo + int2(0, 1));
+  float4 rightflux  = read_tex(flux_in, coo + int2(1, 0));
+  float4 bottomflux = read_tex(flux_in, coo + int2(0,-1));
+  float4 leftflux   = read_tex(flux_in, coo + int2(-1,0));
+  
+  // Outflow
+  float fleftout   = curflux.x;
+  float frightout  = curflux.y;
+  float ftopout    = curflux.z;
+  float fbottomout = curflux.w;
+  
+  vec<float, 4> outputflux = curflux;
+  
+  float fout = fleftout + frightout + ftopout + fbottomout;
+  float fin = topflux.w + rightflux.x + bottomflux.z + leftflux.y;
+  
+  float deltavol = u.dt * (fin - fout) / (u.l_pipe * u.l_pipe);
+  float cur_water = cur.y;
+  float d2 = max(cur_water + deltavol, 0.0);
+  float da = (cur_water + d2) / 2.0;
+  
+  float2 veloci = float2(0.0);
+  
+  if ((da <= 0.0001) || (cur_water == 0.0 && deltavol == 0.0)) {
+    veloci = float2(0.0);
+  } else {
+    // Calculate velocity based on flux differences
+    veloci = float2(leftflux.y - outputflux.w + outputflux.y - rightflux.w,
+                    bottomflux.x - outputflux.z + outputflux.x - topflux.z) / 2.0;
+    veloci = veloci / (da * u.l_pipe);
+  }
+  
+  if (cur_water < 0.01) {
+    veloci = float2(0.0);
+  } else {
+    // Velocity advection
+    float4 useVel = curvel / 2.0;
+    int2 oldloc = int2(int(coo.x - useVel.x * u.dt), int(coo.y - useVel.y * u.dt));
+    
+    // Manual clamp for advection lookup
+    oldloc = clamp(oldloc, int2(0), int2(w - 1, h - 1));
+    
+    float2 oldvel = velocity_in.read(uint2(oldloc)).xy;
+    veloci += oldvel * u.velAdvMag;
+  }
+  
+  float4 velocity_value = float4(veloci * u.velMult, 0.0, 1.0);
+  cur_water += deltavol;
+  
+  if (cur_water < 0.001) {
+    cur_water = 0.0;
+  }
+  
+  float4 terrain_value = float4(cur.x, cur_water, 0.0, 1.0);
+  
+  velocity_out.write(velocity_value, gid);
+  terrain_out.write(terrain_value, gid);
+}
+

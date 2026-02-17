@@ -108,9 +108,13 @@ class Renderer: MTKViewDelegate {
                                    A_pipe: 1.0,
                                    Kc: 0.5,
                                    Ks: 0.1,
-                                   Kb: 0.001,
                                    Kd: 0.1,
-                                   Ke: 0.015)
+                                   Ke: 0.015,
+                                   talusScale: 2.0,
+                                   thermalStrength: 0.5,
+                                   advectMultiplier: 1.0,
+                                   velAdvMag: 0.1,
+                                   velMult: 0.5)
     heightField = HeightField(device: device,
                               textureResolution: Int(textureResolution),
                               library: device.makeDefaultLibrary(),
@@ -137,6 +141,10 @@ class Renderer: MTKViewDelegate {
   
   func updateErosionUniform(_ data: HeightMapUniforms) {
     heightField.updateErosionUniformBuffer(data)
+  }
+  
+  func setSimulationPaused(_ paused: Bool) {
+    heightField.setPaused(paused)
   }
 
   private func emitStats(for view: MTKView, delta: CFTimeInterval) {

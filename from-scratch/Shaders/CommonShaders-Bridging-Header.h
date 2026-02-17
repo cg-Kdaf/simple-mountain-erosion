@@ -19,10 +19,15 @@ typedef struct {
   float A_pipe;       // Pipe cross-section area
 
   float Kc;           // Sediment capacity constant
-  float Ks;           // Dissolving constant (Regolith softness)
-  float Kb;          // Dissolving constant (Bedrock hardness)
+  float Ks;           // Dissolving constant
   float Kd;           // Deposition constant
   float Ke;         // Evaporation constant
+  
+  float talusScale;    // Slope stability threshold
+  float thermalStrength; // Thermal erosion strength
+  float advectMultiplier; // Sediment advection multiplier
+  float velAdvMag;    // Velocity advection magnitude
+  float velMult;      // Velocity multiplier
 } HeightMapUniforms;
 
 typedef enum {

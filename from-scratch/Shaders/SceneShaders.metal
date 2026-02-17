@@ -119,7 +119,7 @@ kernel void compute_main(texture2d<float, access::write> outTexture [[texture(0)
     // Simple albedo to make it visible
     float4 colored = colorTex.read(sampleCoord);
     float3 albedo = float3(0.75, 0.65, 0.55);
-    albedo = float3(0.0, 0.0, 1.0) * colored.z + (1.0 - colored.z) * albedo;
+    albedo = float3(0.0, 0.0, 1.0) * colored.g + (1.0 - colored.g) * albedo;
 
     // Optional: face orientation fix (avoid backface darkening if desired)
     // if (dot(N, V) < 0.0) N = -N;
