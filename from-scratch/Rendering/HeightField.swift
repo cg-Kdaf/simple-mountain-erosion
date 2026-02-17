@@ -421,5 +421,31 @@ extension HeightField {
     erosionStep(commandBuffer: commandBuffer)
     recalculateNormals(commandBuffer: commandBuffer)
   }
+  
+  /// Execute a single erosion pass with uniform rain amount, without pausing the simulation
+  func addRainUniformly(commandBuffer: MTLCommandBuffer, rainAmount: Float) {
+    guard let encoder = commandBuffer.makeComputeCommandEncoder()
+    else { return }
+    
+    encoder.label = "Add Uniform Rain Pass"
+    encoder.setComputePipelineState(pipelineStates.rain)
+    encoder.setTexture(textures.terrain, index: 0)
+    encoder.setTexture(textures.terrainTemp, index: 1)
+    encoder.setBuffer(simulationUniformsBuffer, offset: 0, index: 0)
+    
+    var rainAmountBuffer = rainAmount
+    encoder.setBytes(&rainAmountBuffer,
+                     length: MemoryLayout<Float>.size,
+                     index: 1)
+    
+    let (threadsPerGrid, threadsPerThreadgroup) = createDisplatchGrid(pipelineState: pipelineStates.rain)
+    encoder.dispatchThreadgroups(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
+    encoder.endEncoding()
+    
+    // Flip the terrain texture since rain shader writes to terrainTemp
+    let terrain_swap = textures.terrain
+    textures.terrain = textures.terrainTemp
+    textures.terrainTemp = terrain_swap
+  }
 }
 

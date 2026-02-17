@@ -465,4 +465,14 @@ extension Renderer: OrbitControllable {
     updateCameraBasis(lookAt: target)
     memcpy(raytracingUniformsBuffer.contents(), &raytracingUniforms, MemoryLayout<RayTracingUniforms>.stride)
   }
+  
+  func applyUniformRain(amount: Float) {
+    semaphore.wait()
+    defer { semaphore.signal() }
+    
+    guard let commandBuffer = pipeline.queue.makeCommandBuffer() else { return }
+    heightField.addRainUniformly(commandBuffer: commandBuffer, rainAmount: amount)
+    commandBuffer.commit()
+    commandBuffer.waitUntilCompleted()
+  }
 }

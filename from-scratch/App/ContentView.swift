@@ -263,6 +263,13 @@ struct ContentView: View {
                     .onChange(of: simulationPaused) { _, newValue in
                       renderer?.setSimulationPaused(newValue)
                     }
+                  
+                  Button("Add Water") {
+                    renderer?.applyUniformRain(amount: 5.0)
+                  }
+                  .controlSize(.small)
+                  .buttonStyle(.borderedProminent)
+                  .tint(.blue)
                 }
                 .padding(.bottom, 4)
                 
