@@ -58,7 +58,7 @@ public enum MeshFactory {
     let vertsPerCol = sy + 1
     var vertices: [Vertex] = []
     vertices.reserveCapacity(vertsPerRow * vertsPerCol)
-
+    
     for j in 0...sy {
       let v = Float(j) / Float(sy)
       let z = -hh + v * height
@@ -68,7 +68,7 @@ public enum MeshFactory {
         vertices.append(Vertex(position: SIMD3<Float>(x, 0, z), uv: SIMD2<Float>(u, v)))
       }
     }
-
+    
     // Indices: two triangles per cell
     var indices: [UInt32] = []
     indices.reserveCapacity(sx * sy * 6)
@@ -84,18 +84,18 @@ public enum MeshFactory {
         indices.append(contentsOf: [i0, i1, i2, i2, i1, i3])
       }
     }
-
+    
     // Create Model I/O vertex buffer
     let vertexDataSize = vertices.count * MemoryLayout<Vertex>.stride
     let vertexData = Data(bytes: vertices, count: vertexDataSize)
     let mdlVertexBuffer = allocator.newBuffer(with: vertexData, type: .vertex)
-
+    
     // Create Model I/O index buffer (use 32-bit to handle large grids safely)
     let indexDataSize = indices.count * MemoryLayout<UInt32>.stride
     let indexData = Data(bytes: indices, count: indexDataSize)
     let mdlIndexBuffer = allocator.newBuffer(with: indexData, type: .index)
     
-    // Describe the layout: position (float3), normal (float3), uv (float2)
+    // Describe the layout: position (float3), uv (float2)
     let vertexDescriptor = MDLVertexDescriptor()
     vertexDescriptor.attributes[0] = MDLVertexAttribute(name: MDLVertexAttributePosition,
                                                         format: .float3,
@@ -103,7 +103,7 @@ public enum MeshFactory {
                                                         bufferIndex: 0)
     vertexDescriptor.attributes[1] = MDLVertexAttribute(name: MDLVertexAttributeTextureCoordinate,
                                                         format: .float2,
-                                                        offset: MemoryLayout<SIMD3<Float>>.stride * 2,
+                                                        offset: MemoryLayout<SIMD3<Float>>.stride,
                                                         bufferIndex: 0)
     vertexDescriptor.layouts[0] = MDLVertexBufferLayout(stride: MemoryLayout<Vertex>.stride)
     

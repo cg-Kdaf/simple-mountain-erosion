@@ -21,7 +21,7 @@ func buildBLAS(device: MTLDevice, scene: SceneContainer) -> MTLAccelerationStruc
     fatalError("Mesh has no submeshes")
   }
   let triangleCount = submesh.indexCount / 3
-
+  
   // Configure the triangle geometry descriptor
   let tri = MTLAccelerationStructureTriangleGeometryDescriptor()
   tri.vertexBuffer = vertexVB.buffer
@@ -45,16 +45,17 @@ struct Vertex {
 final class RenderingPipeline {
   let queue: MTLCommandQueue
   let device: MTLDevice
+  var rasterPipelineState: MTLRenderPipelineState!
   var rayGenPipelineState: MTLComputePipelineState
   var displacePipelineState: MTLComputePipelineState?
   let accelerationStructureBuilder: AccelerationStructureBuilder
   private var library: MTLLibrary
   
   
-  init(device: MTLDevice, view: MTKView, scene: SceneContainer) {
+  init(device: MTLDevice, view: MTKView, scene: SceneContainer, vD: MTLVertexDescriptor) {
     self.device = device
     guard let queue = device.makeCommandQueue() else {
-        fatalError("Failed to create command queue")
+      fatalError("Failed to create command queue")
     }
     self.queue = queue
     guard let library = device.makeDefaultLibrary() else {
@@ -62,13 +63,23 @@ final class RenderingPipeline {
     }
     self.library = library
     
-    let pipelineDescriptor = MTLComputePipelineDescriptor()
-    pipelineDescriptor.computeFunction = library.makeFunction(name: "compute_main")
+    let raytracingPipelineDescriptor = MTLComputePipelineDescriptor()
+    raytracingPipelineDescriptor.computeFunction = library.makeFunction(name: "compute_main")
     let options: MTLPipelineOption = [.bindingInfo, .bufferTypeInfo]
-    let result = try! device.makeComputePipelineState(descriptor: pipelineDescriptor, options: options)
+    let result = try! device.makeComputePipelineState(descriptor: raytracingPipelineDescriptor, options: options)
     rayGenPipelineState = result.0
     accelerationStructureBuilder = AccelerationStructureBuilder(device: device, queue: queue)
     accelerationStructureBuilder.buildAccelerationStructure(for: [buildBLAS(device: device, scene: scene)])
+    
+    
+    
+    let rasterPipelineDescriptor = MTLRenderPipelineDescriptor()
+    rasterPipelineDescriptor.vertexFunction = library.makeFunction(name: "vertexShader")
+    rasterPipelineDescriptor.fragmentFunction = library.makeFunction(name: "fragmentShader")
+    rasterPipelineDescriptor.vertexDescriptor = vD
+    rasterPipelineDescriptor.colorAttachments[0].pixelFormat = view.colorPixelFormat
+    
+    self.rasterPipelineState = try! device.makeRenderPipelineState(descriptor: rasterPipelineDescriptor)
   }
   
   /// Build vertex/texture pipelines and optionally register them on a `HeightField`.
@@ -82,18 +93,18 @@ final class RenderingPipeline {
       displacePipelineState = try? device.makeComputePipelineState(function: displaceFn)
     }
   }
-
+  
   /// Rebuilds all compute pipelines and acceleration structures using the latest default Metal library.
   func reloadShaders(scene: SceneContainer, heightField: AnyObject? = nil) {
     guard let newLibrary = device.makeDefaultLibrary() else { return }
     library = newLibrary
-
+    
     let pipelineDescriptor = MTLComputePipelineDescriptor()
     pipelineDescriptor.computeFunction = library.makeFunction(name: "compute_main")
     let options: MTLPipelineOption = [.bindingInfo, .bufferTypeInfo]
     let result = try! device.makeComputePipelineState(descriptor: pipelineDescriptor, options: options)
     rayGenPipelineState = result.0
-
+    
     buildVertexPipeline(initial_buffer: scene.mesh.vertexBuffers.first!.buffer, heightField: heightField)
     accelerationStructureBuilder.buildAccelerationStructure(for: [buildBLAS(device: device, scene: scene)])
   }

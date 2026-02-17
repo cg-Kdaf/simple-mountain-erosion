@@ -40,6 +40,18 @@ inline ray generateCameraRay(uint2 gid, uint2 viewportSize, CameraProperties cam
   return ray(origin, dir, tMin, tMax);
 }
 
+inline bool traceShadow(raytracing::intersector<triangle_data> intersector,
+                        raytracing::primitive_acceleration_structure accel,
+                        float3 origin,
+                        float3 direction,
+                        float tMax)
+{
+  constexpr float kShadowEpsilon = 1e-3;
+  ray shadowRay = ray(origin + direction * kShadowEpsilon, direction, 0.0, tMax);
+  intersection_result<triangle_data> hit = intersector.intersect(shadowRay, accel);
+  return hit.distance > 0.0;
+}
+
 struct Vertex {
   float3 position;
   float2 uv;
@@ -50,7 +62,7 @@ kernel void compute_vertices(
     device Vertex* outVertices [[buffer(1)]],
     constant uint& vertexCount [[buffer(2)]],
     constant float& meshSize [[buffer(3)]],
-    texture2d<float, access::read_write> heightTex [[texture(0)]],
+    texture2d<float, access::read> heightTex [[texture(0)]],
     uint id [[thread_position_in_grid]])
 {
   if (id >= vertexCount) { return; }
@@ -116,6 +128,11 @@ kernel void compute_main(texture2d<float, access::write> outTexture [[texture(0)
     float ambient = 0.1;
     float ndotl = max(dot(N, L), 0.0);
 
+    // Shadow ray toward the light. If blocked, kill direct light.
+    float3 hitPoint = r.origin + r.direction * intersection.distance;
+    bool occluded = traceShadow(intersector, accelerationStructure, hitPoint, L, 1e6);
+    float shadow = occluded ? 0.0 : 1.0;
+
     // Simple albedo to make it visible
     float4 colored = colorTex.read(sampleCoord);
     float3 albedo = float3(0.75, 0.65, 0.55);
@@ -124,7 +141,7 @@ kernel void compute_main(texture2d<float, access::write> outTexture [[texture(0)
     // Optional: face orientation fix (avoid backface darkening if desired)
     // if (dot(N, V) < 0.0) N = -N;
 
-    float3 shaded = albedo * (ambient + ndotl);
+    float3 shaded = albedo * (ambient + ndotl * shadow);
 
     // Optional: small rim light for nicer look
     float rim = pow(clamp(1.0 - max(dot(N, V), 0.0), 0.0, 1.0), 2.0) * 0.05;
@@ -135,5 +152,32 @@ kernel void compute_main(texture2d<float, access::write> outTexture [[texture(0)
   
 
   outTexture.write(float4(color, 1.0), gid);
+}
+
+struct RasterizerData {
+  float4 position [[position]];
+  float2 uv;
+};
+
+vertex RasterizerData vertexShader(uint vertexID [[vertex_id]],
+                                   constant Vertex *vertices [[buffer(0)]],
+                                   constant float& meshSize [[buffer(1)]],
+                                   texture2d<float, access::read> heightTex [[texture(0)]]) {
+  RasterizerData out;
+  Vertex v = vertices[vertexID];
+  
+  float4 terrain = heightTex.read(uint2(v.uv * float2(heightTex.get_width(),
+                                                      heightTex.get_height()) - float2(0.5)));
+  
+  out.position = float4(v.position, 1.0);
+  out.position.y = v.position.y + getWholeHeight(terrain);
+  out.position.xz = v.position.xz * meshSize;
+  out.uv = v.uv;
+  
+  return out;
+}
+
+fragment float4 fragmentShader(RasterizerData in [[stage_in]]) {
+  return float4(in.uv.x, in.uv.y, 0.0, 1.0);
 }
 

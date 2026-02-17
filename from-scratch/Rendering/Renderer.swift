@@ -20,7 +20,7 @@ class Renderer: MTKViewDelegate {
     var deviceName: String
     var shaderReloads: Int
   }
-
+  
   let device: MTLDevice
   let dateStart = NSDate()
   let maxFramesInFlight = 1
@@ -37,21 +37,21 @@ class Renderer: MTKViewDelegate {
   var textureResolution: UInt
   @Binding var meshSize: Float
   var shaderReloads: Int = 0
-
+  
   var raytracingUniforms: RayTracingUniforms
   var raytracingUniformsBuffer: MTLBuffer
   
   var heightMapUniforms: HeightMapUniforms
   
   var onStats: ((Stats) -> Void)?
-
+  
   private var lastFrameTimestamp: CFTimeInterval = CACurrentMediaTime()
-
+  
   // Orbit parameters controlled from SwiftUI gestures
   private var orbitYaw: Double = 0.0
   private var orbitPitch: Double = -0.5
   private var orbitDistance: Double = 3.0
-
+  
   init?(metalKitView: MTKView,
         meshResolution: UInt,
         textureResolution: UInt,
@@ -71,7 +71,7 @@ class Renderer: MTKViewDelegate {
       return nil
     }
     device = device_
-
+    
     let size = metalKitView.drawableSize
     let aspect = Float(size.width / max(size.height, 1))
     let eye = SIMD3<Float>(0, 0, 0)
@@ -85,7 +85,7 @@ class Renderer: MTKViewDelegate {
     raytracingUniforms = .init(camera: cam, meshSize: 0.0, overlayDebug: Shading)
     raytracingUniformsBuffer = device.makeBuffer(length: MemoryLayout<RayTracingUniforms>.stride, options: .storageModeShared)!
     memcpy(raytracingUniformsBuffer.contents(), &raytracingUniforms, MemoryLayout<RayTracingUniforms>.stride)
-
+    
     semaphore = DispatchSemaphore.init(value: maxFramesInFlight)
     hash = 100
     description = "Renderer"
@@ -119,8 +119,9 @@ class Renderer: MTKViewDelegate {
                               textureResolution: Int(textureResolution),
                               library: device.makeDefaultLibrary(),
                               simulationUniforms: self.heightMapUniforms)
-
-    pipeline = RenderingPipeline(device: self.device, view: metalKitView, scene: scene_displaced)
+    
+    let vD: MTLVertexDescriptor = MTKMetalVertexDescriptorFromModelIO(mesh.vertexDescriptor)!
+    pipeline = RenderingPipeline(device: self.device, view: metalKitView, scene: scene_displaced, vD: vD)
     pipeline.buildVertexPipeline(initial_buffer: (scene_displaced.mesh.vertexBuffers.first!.buffer), heightField: heightField)
     vertexBufferOriginal = device.makeBuffer(length: scene_displaced.mesh.vertexBuffers[0].length,
                                              options: .storageModePrivate)!
@@ -146,7 +147,7 @@ class Renderer: MTKViewDelegate {
   func setSimulationPaused(_ paused: Bool) {
     heightField.setPaused(paused)
   }
-
+  
   private func emitStats(for view: MTKView, delta: CFTimeInterval) {
     let fps = delta > 0 ? 1.0 / delta : 0.0
     let stats = Stats(
@@ -192,9 +193,9 @@ class Renderer: MTKViewDelegate {
     let meshChanged = clampedMesh != meshResolution
     let textureChanged = clampedTexture != textureResolution
     guard meshChanged || textureChanged else { return }
-
+    
     semaphore.wait()
-
+    
     if meshChanged {
       meshResolution = clampedMesh
       let mesh = MeshFactory.makeExplicitPlane(
@@ -204,7 +205,7 @@ class Renderer: MTKViewDelegate {
         segmentsY: Int(clampedMesh))
       scene_displaced = BasicScene(mesh: mesh)
       pipeline.reloadShaders(scene: scene_displaced, heightField: heightField)
-
+      
       vertexBufferOriginal = device.makeBuffer(length: scene_displaced.mesh.vertexBuffers[0].length,
                                                options: .storageModePrivate)!
       if let commandBuffer = pipeline.queue.makeCommandBuffer(),
@@ -217,12 +218,12 @@ class Renderer: MTKViewDelegate {
         commandBuffer.waitUntilCompleted()
       }
     }
-
+    
     if textureChanged {
       textureResolution = clampedTexture
       heightField.resize(to: Int(clampedTexture))
     }
-
+    
     semaphore.signal()
   }
   
@@ -233,15 +234,15 @@ class Renderer: MTKViewDelegate {
     semaphore.signal()
   }
   
-  func draw(in view: MTKView) {
+  func raytracing(in view: MTKView) {
     let now = CACurrentMediaTime()
     let delta = now - lastFrameTimestamp
     lastFrameTimestamp = now
-
+    
     semaphore.wait()
     guard let commandBuffer = pipeline.queue.makeCommandBuffer()
     else { fatalError() }
-
+    
     let currentTime: Float = Float(dateStart.timeIntervalSinceNow)
     
     // --- STEP 0: Displacement texture update ---
@@ -253,7 +254,7 @@ class Renderer: MTKViewDelegate {
     
     displaceEncoder.label = "Vertex Displacement Pass"
     displaceEncoder.setComputePipelineState(pipeline.displacePipelineState!)
-
+    
     // Bind Buffers according to your shader signature:
     displaceEncoder.setBuffer(vertexBufferOriginal, offset: 0, index: 0)
     displaceEncoder.setBuffer((scene_displaced.mesh.vertexBuffers.first!.buffer), offset: 0, index: 1)
@@ -270,10 +271,10 @@ class Renderer: MTKViewDelegate {
     // Unlike your ray tracer which uses W x H, this uses a linear array of vertices.
     let threadGroupSize = MTLSize(width: 64, height: 1, depth: 1)
     let threadGroups = MTLSize(width: (scene_displaced.mesh.vertexCount + 63) / 64, height: 1, depth: 1)
-
+    
     displaceEncoder.dispatchThreadgroups(threadGroups, threadsPerThreadgroup: threadGroupSize)
     displaceEncoder.endEncoding()
-
+    
     // ... [Step 2: Refit Acceleration Structure] ...
     pipeline.accelerationStructureBuilder.refit(commandBuffer: commandBuffer)
     
@@ -289,7 +290,7 @@ class Renderer: MTKViewDelegate {
     computeEncoder.setBuffer(scene_displaced.mesh.vertexBuffers.first!.buffer, offset: 0, index: 1)
     computeEncoder.setBuffer(scene_displaced.mesh.submeshes.first!.indexBuffer.buffer, offset: 0, index: 2)
     computeEncoder.setBuffer(raytracingUniformsBuffer, offset: 0, index: 3)
-
+    
     computeEncoder.setAccelerationStructure(pipeline.accelerationStructureBuilder.accelerationStructure, bufferIndex: 0)
     let w = Int(view.drawableSize.width)
     let h = Int(view.drawableSize.height)
@@ -297,18 +298,56 @@ class Renderer: MTKViewDelegate {
     let grid = MTLSize(width: (w + 7)/8 * 8, height: (h + 7)/8 * 8, depth: 1)
     computeEncoder.dispatchThreads(grid, threadsPerThreadgroup: tg)
     computeEncoder.endEncoding()
-
+    
     
     guard let drawable = view.currentDrawable else { fatalError() }
-
+    
     commandBuffer.present(drawable)
     commandBuffer.commit()
-
+    
     emitStats(for: view, delta: delta)
     
     commandBuffer.addCompletedHandler { cb in
       self.semaphore.signal()
     }
+  }
+  
+  func raster(in view: MTKView) {
+    let now = CACurrentMediaTime()
+    let delta = now - lastFrameTimestamp
+    lastFrameTimestamp = now
+    
+    semaphore.wait()
+    guard let renderPassDescriptor = view.currentRenderPassDescriptor else { return }
+    
+    guard let commandBuffer = pipeline.queue.makeCommandBuffer() else { return }
+    
+    guard let renderEncoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor) else { return }
+    
+    renderEncoder.setRenderPipelineState(pipeline.rasterPipelineState)
+    renderEncoder.setVertexBuffer(vertexBufferOriginal, offset: 0, index: 0)
+    renderEncoder.setVertexBytes(&meshSize,
+                                 length: MemoryLayout<Float>.size,
+                                 index: 1)
+    renderEncoder.setVertexTexture(heightField.textures.terrain, index: 0)
+    
+    renderEncoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: Int(meshResolution * meshResolution))
+    
+    renderEncoder.endEncoding()
+    
+    guard let drawable = view.currentDrawable else { fatalError() }
+    commandBuffer.present(drawable)
+    commandBuffer.commit()
+    
+    emitStats(for: view, delta: delta)
+    
+    commandBuffer.addCompletedHandler { cb in
+      self.semaphore.signal()
+    }
+  }
+  
+  func draw(in view: MTKView) {
+    raster(in: view)
   }
   
   func isEqual(_ object: Any?) -> Bool {
@@ -358,7 +397,7 @@ extension Renderer: OrbitControllable {
     orbitYaw = yaw
     orbitPitch = max(-1.5, min(1.5, pitch))
     orbitDistance = max(0.1, min(300.0, distance))
-
+    
     // Target the origin (0,0,0). Compute spherical coordinates (yaw around Y, pitch around X).
     let target = SIMD3<Float>(0, 0, 0)
     let cosPitch = cos(orbitPitch)
@@ -372,7 +411,7 @@ extension Renderer: OrbitControllable {
       Float(-cosPitch * cosYaw * orbitDistance)
     )
     raytracingUniforms.camera.position = target + offset
-
+    
     updateCameraBasis(lookAt: target)
     memcpy(raytracingUniformsBuffer.contents(), &raytracingUniforms, MemoryLayout<RayTracingUniforms>.stride)
   }
