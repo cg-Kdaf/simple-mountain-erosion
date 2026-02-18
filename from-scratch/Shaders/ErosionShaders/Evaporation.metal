@@ -19,8 +19,8 @@ kernel void evaporation(texture2d<float, access::read> terrainRead [[texture(0)]
   float4 state = terrainRead.read(gid);
   
   // Simple exponential decay
-  state.b = state.b * (1.0 - hmU.Ke * hmU.dt);
-  if(state.b < 0.0001) state.b = 0.0; // Cleanup threshold
+  state.g = state.g * (1.0 - hmU.Ke * hmU.dt);
+  if(state.g < 0.0001) state.g = 0.0; // Cleanup threshold
   
   terrainWrite.write(state, gid);
 }

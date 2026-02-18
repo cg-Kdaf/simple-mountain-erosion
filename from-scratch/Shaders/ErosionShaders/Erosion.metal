@@ -151,11 +151,15 @@ kernel void slipperage_compute(texture2d<float, access::read> terrain_in [[textu
   if (coo.y <= 1) b = terraincur;
   else if (coo.y >= (h - 1)) t = terraincur;
   
-  float maxLocalDiff = u.talusScale * 0.01;
-  float avgDiff = (r + t + b + l) * 0.25 - terraincur;
-  avgDiff = 10.0 * max(abs(avgDiff) - maxLocalDiff, 0.0);
+  // Calculate the maximum height difference to neighbors
+  float maxDiff = max(max(abs(terraincur - r), abs(terraincur - l)),
+                      max(abs(terraincur - t), abs(terraincur - b)));
   
-  float4 slipperage = float4(max(u.talusScale - avgDiff, 0.0), 0.0, 0.0, 1.0);
+  // The talus angle (angle of repose) - material flows when slope exceeds this
+  float talusAngle = u.talusScale;
+  
+  // Store talus angle as slipperage threshold
+  float4 slipperage = float4(talusAngle, 0.0, 0.0, 1.0);
   slipperage_out.write(slipperage, gid);
 }
 
@@ -168,20 +172,31 @@ kernel void thermal_apply_compute(texture2d<float, access::read> terrain_in [[te
   if (gid.x >= terrain_out.get_width() || gid.y >= terrain_out.get_height()) return;
   
   int2 coo = int2(gid);
+  int w = int(terrain_out.get_width());
+  int h = int(terrain_out.get_height());
   
   float4 topflux    = read_tex(terrain_flux_in, coo + int2(0, 1));
   float4 rightflux  = read_tex(terrain_flux_in, coo + int2(1, 0));
   float4 bottomflux = read_tex(terrain_flux_in, coo + int2(0,-1));
   float4 leftflux   = read_tex(terrain_flux_in, coo + int2(-1,0));
   
-  // Extract inflows: top.A (its bottom flux), right.R (its left flux), bottom.B (its top flux), left.G (its right flux)
-  float4 inputflux = float4(topflux.w, rightflux.x, bottomflux.z, leftflux.y);
+  // Flux Map: R(left), G(right), B(top), A(bottom)
+  // Inflows: from top cell's bottom flux (topflux.w), from right cell's left flux (rightflux.x),
+  //          from bottom cell's top flux (bottomflux.z), from left cell's right flux (leftflux.y)
   float4 curflux = terrain_flux_in.read(gid);
   
-  float vol = inputflux.x + inputflux.y + inputflux.z + inputflux.w -
-  (curflux.x + curflux.y + curflux.z + curflux.w);
+  // Apply boundary conditions - zero out inflows from out-of-bounds neighbors
+  float inflow_top = (coo.y >= (h - 1)) ? 0.0 : topflux.w;
+  float inflow_right = (coo.x >= (w - 1)) ? 0.0 : rightflux.x;
+  float inflow_bottom = (coo.y <= 1) ? 0.0 : bottomflux.z;
+  float inflow_left = (coo.x <= 1) ? 0.0 : leftflux.y;
   
-  float tdelta = min(100.0, u.dt * u.thermalStrength) * vol;
+  float inflow = inflow_top + inflow_right + inflow_bottom + inflow_left;
+  float outflow = curflux.x + curflux.y + curflux.z + curflux.w;
+  
+  float vol = inflow - outflow;
+  
+  float tdelta = u.dt * u.thermalStrength * vol;
   float4 curTerrain = terrain_in.read(gid);
   
   float4 terrain = float4(curTerrain.x + tdelta, curTerrain.y, curTerrain.z, curTerrain.w);
@@ -200,40 +215,54 @@ kernel void thermal_flux_compute(texture2d<float, access::read> terrain_in [[tex
   int w = terrain_in.get_width();
   int h = terrain_in.get_height();
   
-  float terraintop    = read_tex(terrain_in, coo + int2(0, 1)).x;
-  float terrainright  = read_tex(terrain_in, coo + int2(1, 0)).x;
-  float terrainbottom = read_tex(terrain_in, coo + int2(0,-1)).x;
-  float terrainleft   = read_tex(terrain_in, coo + int2(-1,0)).x;
-  float terraincur    = terrain_in.read(gid).x;
+  float terraincur = terrain_in.read(gid).x;
+  float talusAngle = slipperage_in.read(gid).x;
   
-  if (coo.x <= 1) terrainleft = terraincur;
-  else if (coo.x >= (w - 1)) terrainright = terraincur;
+  // Sample all 8 neighbors
+  float neighbors[8];
+  int2 offsets[8] = {
+    int2(-1,0), int2(1,0), int2(0,1), int2(0,-1),  // cardinal
+    int2(-1,-1), int2(1,-1), int2(-1,1), int2(1,1) // diagonal
+  };
   
-  if (coo.y <= 1) terrainbottom = terraincur;
-  else if (coo.y >= (h - 1)) terraintop = terraincur;
+  // Distance factors: 1.0 for cardinal directions, sqrt(2) for diagonals
+  float distances[8] = {1.0, 1.0, 1.0, 1.0, 1.414, 1.414, 1.414, 1.414};
   
-  float slippagetop    = read_tex(slipperage_in, coo + int2(0, 1)).x;
-  float slippageright  = read_tex(slipperage_in, coo + int2(1, 0)).x;
-  float slippagebottom = read_tex(slipperage_in, coo + int2(0,-1)).x;
-  float slippageleft   = read_tex(slipperage_in, coo + int2(-1,0)).x;
-  float slippagecur    = slipperage_in.read(gid).x;
+  // Calculate total material to move and weighted distribution
+  float totalDiff = 0.0;
+  float diffs[8];
   
-  float4 diff;
-  diff.x = terraincur - terraintop - (slippagecur + slippagetop) * 0.5;
-  diff.y = terraincur - terrainright - (slippagecur + slippageright) * 0.5;
-  diff.z = terraincur - terrainbottom - (slippagecur + slippagebottom) * 0.5;
-  diff.w = terraincur - terrainleft - (slippagecur + slippageleft) * 0.5;
-  
-  diff = max(float4(0.0), diff);
-  float4 newFlow = diff * 1.2;
-  
-  float outfactor = (newFlow.x + newFlow.y + newFlow.z + newFlow.w) * u.dt;
-  if (outfactor > 1e-5) {
-    outfactor = min(1.0, terraincur / outfactor);
-    newFlow *= outfactor;
+  for (int i = 0; i < 8; i++) {
+    neighbors[i] = read_tex(terrain_in, coo + offsets[i]).x;
+    
+    // Height difference divided by distance (slope)
+    float slope = (terraincur - neighbors[i]) / distances[i];
+    
+    // Only move material if slope exceeds talus angle
+    if (slope > talusAngle) {
+      diffs[i] = (slope - talusAngle) * distances[i];
+      totalDiff += diffs[i];
+    } else {
+      diffs[i] = 0.0;
+    }
   }
   
-  terrain_flux_out.write(newFlow, gid);
+  // Flux Map: R(left), G(right), B(top), A(bottom)
+  float4 cardinalFlow = float4(0.0);
+  
+  if (totalDiff > 1e-5) {
+    // Normalize and scale
+    float maxTransfer = terraincur * 0.5; // Don't move more than half the height
+    float scale = min(1.0, maxTransfer / (totalDiff + 1e-6));
+    
+    // Distribute to cardinal directions (sum diagonal contributions)
+    cardinalFlow.x = (diffs[0] + diffs[4] * 0.5 + diffs[6] * 0.5) * scale; // left
+    cardinalFlow.y = (diffs[1] + diffs[5] * 0.5 + diffs[7] * 0.5) * scale; // right
+    cardinalFlow.z = (diffs[2] + diffs[6] * 0.5 + diffs[7] * 0.5) * scale; // top
+    cardinalFlow.w = (diffs[3] + diffs[4] * 0.5 + diffs[5] * 0.5) * scale; // bottom
+  }
+  
+  terrain_flux_out.write(cardinalFlow, gid);
 }
 
 kernel void waterheight_compute(texture2d<float, access::read> terrain_in [[texture(0)]],
@@ -269,7 +298,14 @@ kernel void waterheight_compute(texture2d<float, access::read> terrain_in [[text
   vec<float, 4> outputflux = curflux;
   
   float fout = fleftout + frightout + ftopout + fbottomout;
-  float fin = topflux.w + rightflux.x + bottomflux.z + leftflux.y;
+  
+  // Inflow from neighbors - zero out at boundaries to prevent water creation
+  float fin_top = (coo.y >= int(h - 1)) ? 0.0 : topflux.w;
+  float fin_right = (coo.x >= int(w - 1)) ? 0.0 : rightflux.x;
+  float fin_bottom = (coo.y <= 1) ? 0.0 : bottomflux.z;
+  float fin_left = (coo.x <= 1) ? 0.0 : leftflux.y;
+  
+  float fin = fin_top + fin_right + fin_bottom + fin_left;
   
   float deltavol = u.dt * (fin - fout) / (u.l_pipe * u.l_pipe);
   float cur_water = cur.y;
@@ -281,9 +317,14 @@ kernel void waterheight_compute(texture2d<float, access::read> terrain_in [[text
   if ((da <= 0.0001) || (cur_water == 0.0 && deltavol == 0.0)) {
     veloci = float2(0.0);
   } else {
-    // Calculate velocity based on flux differences
-    veloci = float2(leftflux.y - outputflux.w + outputflux.y - rightflux.w,
-                    bottomflux.x - outputflux.z + outputflux.x - topflux.z) / 2.0;
+    // Calculate velocity based on flux differences, respecting boundaries
+    float left_contrib = (coo.x <= 1) ? 0.0 : leftflux.y;
+    float right_contrib = (coo.x >= int(w - 1)) ? 0.0 : rightflux.x;
+    float bottom_contrib = (coo.y <= 1) ? 0.0 : bottomflux.z;
+    float top_contrib = (coo.y >= int(h - 1)) ? 0.0 : topflux.w;
+    
+    veloci = float2(left_contrib - outputflux.x - right_contrib + outputflux.y,
+                    bottom_contrib - outputflux.w - top_contrib + outputflux.z);
     veloci = veloci / (da * u.l_pipe);
   }
   
