@@ -84,7 +84,8 @@ extension HeightMapUniforms: Equatable {
                lhs.thermalStrength == rhs.thermalStrength &&
                lhs.advectMultiplier == rhs.advectMultiplier &&
                lhs.velAdvMag == rhs.velAdvMag &&
-               lhs.velMult == rhs.velMult
+               lhs.velMult == rhs.velMult &&
+               lhs.mountainNoiseFrequency == rhs.mountainNoiseFrequency
     }
 }
 
@@ -155,7 +156,8 @@ struct ContentView: View {
                                                                   thermalStrength: 0.5,
                                                                   advectMultiplier: 1.0,
                                                                   velAdvMag: 0.1,
-                                                                  velMult: 0.5)
+                                                                  velMult: 0.5,
+                                                                  mountainNoiseFrequency: 5.0)
   @State private var autoTimer = Timer.publish(every: 1.0/60.0, on: .main, in: .common).autoconnect()
   @State private var expandedStats: Bool = false
   @State private var expandedLiveControls: Bool = false
@@ -175,7 +177,7 @@ struct ContentView: View {
         MetalRTView(renderer: $renderer, yaw: yaw, pitch: pitch, distance: distance, onStats: { stats = $0 }, onScroll: { delta in
           let sensitivity = 0.01
           distance -= delta * sensitivity
-          distance = max(0.1, min(250.0, distance))
+          distance = max(0.1, min(1000.0, distance))
           renderer?.setOrbit(yaw: yaw, pitch: pitch, distance: distance)
         }) { mtkView in
           Renderer(metalKitView: mtkView,
@@ -417,6 +419,16 @@ struct ContentView: View {
                     Text("\(Int(textureResolution))").monospacedDigit().font(.caption2)
                   }
                   Slider(value: $textureResolution, in: 32...2048, step: 32)
+                  
+                  HStack {
+                    Slider(value: $heightMapUniforms.mountainNoiseFrequency, in: 0.1...20.0, label: {
+                      Text("Mountain noise frequency").font(.caption2)
+                    })
+                    Text(String(format: "%.2f", heightMapUniforms.mountainNoiseFrequency)).monospacedDigit().font(.caption2)
+                  }
+                  .onChange(of: heightMapUniforms) { _,newval in
+                    renderer?.updateErosionUniform(newval)
+                  }
                 }
                 
                 HStack(spacing: 6) {
@@ -492,7 +504,8 @@ struct ContentView: View {
       thermalStrength: 0.5,
       advectMultiplier: 1.0,
       velAdvMag: 0.1,
-      velMult: 0.5
+      velMult: 0.5,
+      mountainNoiseFrequency: 5.0
     )
     renderer?.updateErosionUniform(heightMapUniforms)
   }

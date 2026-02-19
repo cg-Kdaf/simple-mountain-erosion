@@ -28,6 +28,7 @@ typedef struct {
   float advectMultiplier; // Sediment advection multiplier
   float velAdvMag;    // Velocity advection magnitude
   float velMult;      // Velocity multiplier
+  float mountainNoiseFrequency; // Frequency of mountain noise
 } HeightMapUniforms;
 
 typedef enum {

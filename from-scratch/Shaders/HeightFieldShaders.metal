@@ -49,16 +49,17 @@ static float basicMountainForErosion(float2 uv) {
   return pow(h, 4.0) * 10.0 + details * 0.06 + details2 * 0.003;
 }
 
-static float complexMountainForErosion(float2 uv) {
-  return fbm(uv * 5.0);
+static float complexMountainForErosion(float2 uv, float frequency) {
+  return fbm(uv * frequency);
 }
 
-static float getDisplacement(float2 uv) {
-  return complexMountainForErosion(uv) * 1000.0;
+static float getDisplacement(float2 uv, float frequency) {
+  return complexMountainForErosion(uv, frequency) * 1000.0;
 }
 
 kernel void reset_heightmap(texture2d<float, access::read_write> heightTex [[texture(0)]],
                             texture2d<float, access::read_write> fluxTex [[texture(1)]],
+                            constant HeightMapUniforms& u [[buffer(0)]],
                             uint2 gid [[thread_position_in_grid]])
 {
   uint width = heightTex.get_width();
@@ -67,7 +68,7 @@ kernel void reset_heightmap(texture2d<float, access::read_write> heightTex [[tex
   
   float2 uv = (float2(gid) + 0.5) / float2(width, height);
   
-  float hC = getDisplacement(uv);
+  float hC = getDisplacement(uv, u.mountainNoiseFrequency);
   const float water = 0.0;
   heightTex.write(float4(max(0.0, hC) + 3.0, water, 0.0, 0.0), gid);
   fluxTex.write(float4(0.0), gid);
@@ -84,7 +85,7 @@ kernel void live_animation_heightmap(texture2d<float, access::read_write> height
   float2 uv = (float2(gid) + 0.5) / float2(width, height) + float2(time);
   
   // Write center height
-  float hC = getDisplacement(uv);
+  float hC = getDisplacement(uv, 5.0);
   heightTex.write(hC, gid);
 }
 

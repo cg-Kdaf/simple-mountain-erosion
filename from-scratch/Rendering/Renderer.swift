@@ -123,7 +123,8 @@ class Renderer: MTKViewDelegate {
                                    thermalStrength: 0.5,
                                    advectMultiplier: 1.0,
                                    velAdvMag: 0.1,
-                                   velMult: 0.5)
+                                   velMult: 0.5,
+                                   mountainNoiseFrequency: 5.0)
     heightField = HeightField(device: device,
                               textureResolution: Int(textureResolution),
                               library: device.makeDefaultLibrary(),
@@ -446,7 +447,7 @@ extension Renderer: OrbitControllable {
     // Cache values with safety clamps
     orbitYaw = yaw
     orbitPitch = max(-1.5, min(1.5, pitch))
-    orbitDistance = max(0.1, min(300.0, distance))
+    orbitDistance = max(0.1, min(1000.0, distance))
     
     // Target the origin (0,0,0). Compute spherical coordinates (yaw around Y, pitch around X).
     let target = SIMD3<Float>(0, 0, 0)

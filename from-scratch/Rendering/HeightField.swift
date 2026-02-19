@@ -230,6 +230,8 @@ extension HeightField {
     encoder.setComputePipelineState(pipelineStates.reset)
     encoder.setTexture(textures.terrain, index: 0)
     encoder.setTexture(textures.flux, index: 1)
+    
+    encoder.setBuffer(simulationUniformsBuffer, offset: 0, index: 0)
 
     let (threadsPerGrid, threadsPerThreadgroup) = createDisplatchGrid(pipelineState: pipelineStates.reset)
     
