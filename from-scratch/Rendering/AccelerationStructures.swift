@@ -14,7 +14,7 @@ final class AccelerationStructureBuilder {
   var scratchBuffer: MTLBuffer!
   var descriptor: MTLPrimitiveAccelerationStructureDescriptor!
   var accelerationStructure: MTLAccelerationStructure!
-    
+  
   init(device: MTLDevice, queue: MTLCommandQueue) {
     self.device = device
     self.commandQueue = queue
@@ -51,13 +51,13 @@ final class AccelerationStructureBuilder {
   func refit(commandBuffer: MTLCommandBuffer) {
     guard let asEncoder = commandBuffer.makeAccelerationStructureCommandEncoder() else { fatalError() }
     asEncoder.label = "Refit Pass"
-
+    
     asEncoder.refit(sourceAccelerationStructure: accelerationStructure,
                     descriptor: descriptor,
                     destinationAccelerationStructure: accelerationStructure,
                     scratchBuffer: scratchBuffer,
                     scratchBufferOffset: 0)
-
+    
     asEncoder.endEncoding()
   }
 }

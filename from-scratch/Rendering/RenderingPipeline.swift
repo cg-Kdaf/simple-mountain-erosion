@@ -82,14 +82,13 @@ final class RenderingPipeline {
     rasterPipelineDescriptor.depthAttachmentPixelFormat = view.depthStencilPixelFormat
     
     self.rasterPipelineState = try! device.makeRenderPipelineState(descriptor: rasterPipelineDescriptor)
-
+    
     let depthDescriptor = MTLDepthStencilDescriptor()
     depthDescriptor.depthCompareFunction = .less
     depthDescriptor.isDepthWriteEnabled = true
     self.depthStencilState = device.makeDepthStencilState(descriptor: depthDescriptor)
   }
   
-  /// Build vertex/texture pipelines and optionally register them on a `HeightField`.
   func buildVertexPipeline(initial_buffer: MTLBuffer, heightField: AnyObject? = nil) {
     // If a HeightField is provided, let it create the displacement/texture pipelines
     // The HeightField will use the pipeline library to build its compute pipelines.
@@ -101,7 +100,6 @@ final class RenderingPipeline {
     }
   }
   
-  /// Rebuilds all compute pipelines and acceleration structures using the latest default Metal library.
   func reloadShaders(scene: SceneContainer, heightField: AnyObject? = nil) {
     guard let newLibrary = device.makeDefaultLibrary() else { return }
     library = newLibrary

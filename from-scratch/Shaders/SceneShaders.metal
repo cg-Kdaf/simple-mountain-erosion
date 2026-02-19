@@ -10,17 +10,19 @@
 using namespace metal;
 using namespace raytracing;
 
+#define LIGHT_DIRECTION float3(0.5, 0.25, 0.6)
+
 inline ray generateCameraRay(uint2 gid, uint2 viewportSize, CameraProperties camera)
 {
-  // 1. Map pixel center to NDC [-1, 1]
+  // Map pixel center to [-1, 1]
   float2 uv = (float2(gid) + 0.5) / float2(viewportSize);
   float2 ndc = uv * 2.0 - 1.0;
   
-  // 2. Calculate the size of the view plane based on FOV
+  // Calculate the size of the view plane based on FOV
   // tan(fov/2) gives us the height of the image plane at 1 unit distance
   float tanHalfFov = tan(camera.fovYRadians * 0.5);
   
-  // 3. Calculate offsets on the image plane
+  // Calculate offsets on the image plane
   // Scale X by aspect ratio to prevent distortion
   float screenX = ndc.x * camera.aspect * tanHalfFov;
   
@@ -28,10 +30,9 @@ inline ray generateCameraRay(uint2 gid, uint2 viewportSize, CameraProperties cam
   // while world space Up (Y+) points up.
   float screenY = -ndc.y * tanHalfFov;
   
-  // 4. Construct direction: Forward + projected offsets on Right and Up vectors
+  // Construct direction: Forward + projected offsets on Right and Up vectors
   float3 dir = normalize(camera.forward + (camera.right * screenX) + (camera.up * screenY));
   
-  // 5. Origin is the camera position
   float3 origin = camera.position;
   
   constexpr float tMin = 0.0;
@@ -57,6 +58,7 @@ struct Vertex {
   float2 uv;
 };
 
+// Compute shader used for the displacement of the vertices
 kernel void compute_vertices(device const Vertex* inVertices [[buffer(0)]],
                              device Vertex* outVertices [[buffer(1)]],
                              constant uint& vertexCount [[buffer(2)]],
@@ -75,6 +77,7 @@ kernel void compute_vertices(device const Vertex* inVertices [[buffer(0)]],
   outVertices[id].position.xz = v.position.xz * meshSize;
 }
 
+// Compute shader used for the raytracing
 kernel void compute_main(texture2d<float, access::write> outTexture [[texture(0)]],
                          texture2d<float, access::sample> normalTex [[texture(1)]],
                          texture2d<float, access::sample> colorTex [[texture(2)]],
@@ -92,10 +95,8 @@ kernel void compute_main(texture2d<float, access::write> outTexture [[texture(0)
   uint2 size = uint2(outTexture.get_width(), outTexture.get_height());
   if (gid.x >= size.x || gid.y >= size.y) { return; }
   
-  // Generate camera ray
   ray r = generateCameraRay(gid, size, rtUniforms.camera);
   
-  // Intersect with the acceleration structure
   intersector<triangle_data> intersector;
   intersection_result<triangle_data> intersection = intersector.intersect(r, accelerationStructure);
   
@@ -103,7 +104,6 @@ kernel void compute_main(texture2d<float, access::write> outTexture [[texture(0)
   float2 uv = float2(gid) / float2(size);
   float3 color = mix(float3(0.6, 0.8, 1.0), float3(0.1, 0.2, 0.4), uv.y);
   
-  // Debug texture visualization
   constexpr sampler texSampler(coord::normalized, address::clamp_to_edge, filter::linear);
   
   if (rtUniforms.overlayDebug == 1) {
@@ -158,8 +158,8 @@ kernel void compute_main(texture2d<float, access::write> outTexture [[texture(0)
     float3 N = normalize(normalTex.sample(normalSampler, interpUV).xyz);
     
     // Simple Lambert shading
-    float3 L = normalize(float3(0.5, 0.8, 0.6)); // fixed light direction
-    float3 V = normalize(-r.direction);          // view direction
+    float3 L = normalize(LIGHT_DIRECTION);
+    float3 V = normalize(-r.direction);
     
     float ambient = 0.1;
     float ndotl = max(dot(N, L), 0.0);
@@ -169,18 +169,14 @@ kernel void compute_main(texture2d<float, access::write> outTexture [[texture(0)
     bool occluded = traceShadow(intersector, accelerationStructure, hitPoint, L, 1e6);
     float shadow = occluded ? 0.0 : 1.0;
     
-    // Simple albedo to make it visible
+    // Simple albedo
     constexpr sampler colorSampler(coord::normalized, address::clamp_to_edge, filter::linear);
     float4 colored = colorTex.sample(colorSampler, interpUV);
     float3 albedo = float3(0.75, 0.65, 0.55);
     albedo = float3(0.0, 0.0, 1.0) * colored.g + (1.0 - colored.g) * albedo;
     
-    // Optional: face orientation fix (avoid backface darkening if desired)
-    // if (dot(N, V) < 0.0) N = -N;
-    
     float3 shaded = albedo * (ambient + ndotl * shadow);
     
-    // Optional: small rim light for nicer look
     float rim = pow(clamp(1.0 - max(dot(N, V), 0.0), 0.0, 1.0), 2.0) * 0.05;
     shaded += rim;
     
@@ -295,7 +291,7 @@ fragment float4 fragmentShader(RasterizerData in [[stage_in]],
   // Default: normal shading (overlayDebug == 0)
   float3 N = normalize(normalTex.sample(normalSampler, uv).xyz);
   
-  float3 L = normalize(float3(0.5, 0.8, 0.6));
+  float3 L = normalize(LIGHT_DIRECTION);
   float3 V = normalize(rtUniforms.camera.position - in.worldPos);
   
   float ambient = 0.1;

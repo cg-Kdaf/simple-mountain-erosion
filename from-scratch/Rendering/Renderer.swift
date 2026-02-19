@@ -15,7 +15,7 @@ class Renderer: MTKViewDelegate {
     case raster
     case raytracing
   }
-
+  
   struct Stats {
     var fps: Double
     var frameTimeMs: Double
@@ -49,7 +49,7 @@ class Renderer: MTKViewDelegate {
   var heightMapUniforms: HeightMapUniforms
   
   var onStats: ((Stats) -> Void)?
-
+  
   private var renderMode: RenderMode = .raster
   private var debugTextureMode: TextureOverlay = Shading
   
@@ -157,11 +157,11 @@ class Renderer: MTKViewDelegate {
   func setSimulationPaused(_ paused: Bool) {
     heightField.setPaused(paused)
   }
-
+  
   func setRenderMode(_ mode: RenderMode) {
     renderMode = mode
   }
-
+  
   func setDebugTextureMode(_ mode: TextureOverlay) {
     debugTextureMode = mode
     raytracingUniforms.overlayDebug = mode

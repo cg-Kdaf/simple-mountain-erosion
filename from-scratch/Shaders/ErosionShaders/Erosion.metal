@@ -151,10 +151,6 @@ kernel void slipperage_compute(texture2d<float, access::read> terrain_in [[textu
   if (coo.y <= 1) b = terraincur;
   else if (coo.y >= (h - 1)) t = terraincur;
   
-  // Calculate the maximum height difference to neighbors
-  float maxDiff = max(max(abs(terraincur - r), abs(terraincur - l)),
-                      max(abs(terraincur - t), abs(terraincur - b)));
-  
   // The talus angle (angle of repose) - material flows when slope exceeds this
   float talusAngle = u.talusScale;
   
@@ -212,8 +208,6 @@ kernel void thermal_flux_compute(texture2d<float, access::read> terrain_in [[tex
   if (gid.x >= terrain_flux_out.get_width() || gid.y >= terrain_flux_out.get_height()) return;
   
   int2 coo = int2(gid);
-  int w = terrain_in.get_width();
-  int h = terrain_in.get_height();
   
   float terraincur = terrain_in.read(gid).x;
   float talusAngle = slipperage_in.read(gid).x;
